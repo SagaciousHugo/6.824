@@ -56,11 +56,11 @@ func doReduce(
 		if err != nil {
 			log.Fatal(err)
 		}
-		defer func() {
+		defer func(in *os.File) {
 			if err := in.Close(); err != nil {
 				log.Fatal(err)
 			}
-		}()
+		}(in)
 		dec := json.NewDecoder(in)
 		for dec.More() {
 			var kv KeyValue
