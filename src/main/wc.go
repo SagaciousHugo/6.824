@@ -1,9 +1,14 @@
 package main
 
 import (
+	"bytes"
 	"fmt"
+	"log"
 	"mapreduce"
 	"os"
+	"strconv"
+	"strings"
+	"unicode"
 )
 
 //
@@ -15,6 +20,21 @@ import (
 //
 func mapF(filename string, contents string) []mapreduce.KeyValue {
 	// Your code here (Part II).
+	var res []mapreduce.KeyValue
+	var letterContents bytes.Buffer
+	for _, r := range contents {
+		if ok := unicode.IsLetter(r); ok {
+			letterContents.WriteRune(r)
+		} else {
+			letterContents.WriteRune(' ')
+		}
+	}
+	words := strings.Fields(letterContents.String())
+	for _, w := range words {
+		kv := mapreduce.KeyValue{w, ""}
+		res = append(res, kv)
+	}
+	return res
 }
 
 //
@@ -24,6 +44,7 @@ func mapF(filename string, contents string) []mapreduce.KeyValue {
 //
 func reduceF(key string, values []string) string {
 	// Your code here (Part II).
+	return strconv.Itoa(len(values))
 }
 
 // Can be run in 3 ways:
@@ -31,6 +52,8 @@ func reduceF(key string, values []string) string {
 // 2) Master (e.g., go run wc.go master localhost:7777 x1.txt .. xN.txt)
 // 3) Worker (e.g., go run wc.go worker localhost:7777 localhost:7778 &)
 func main() {
+	log.SetFlags(log.Lshortfile | log.LstdFlags)
+	// show log line
 	if len(os.Args) < 4 {
 		fmt.Printf("%s: see usage comments in file\n", os.Args[0])
 	} else if os.Args[1] == "master" {

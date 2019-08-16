@@ -1,7 +1,12 @@
 package mapreduce
 
 import (
+	"encoding/json"
 	"hash/fnv"
+	"io/ioutil"
+	"log"
+	"os"
+	"sync"
 )
 
 func doMap(
@@ -52,11 +57,54 @@ func doMap(
 	// Remember to close the file after you have written all the values!
 	//
 	// Your code here (Part I).
-	//
+	buf, err := ioutil.ReadFile(inFile)
+	if err != nil {
+		log.Fatal(err)
+	}
+	kvs := mapF(inFile, string(buf))
+	chMap := make(map[int]chan KeyValue)
+	var wg sync.WaitGroup
+	wg.Add(len(kvs))
+	for _, kv := range kvs {
+		h := ihash(kv.Key)
+		reducerNum := h % nReduce
+		if ch, ok := chMap[reducerNum]; ok {
+			ch <- kv
+		} else {
+			ch := make(chan KeyValue, 10)
+			ch <- kv
+			chMap[reducerNum] = ch
+			go mapOutput(reduceName(jobName, mapTask, reducerNum), ch, &wg)
+		}
+	}
+	wg.Wait()
+	for _, ch := range chMap {
+		close(ch)
+	}
 }
 
 func ihash(s string) int {
 	h := fnv.New32a()
 	h.Write([]byte(s))
 	return int(h.Sum32() & 0x7fffffff)
+}
+
+func mapOutput(filename string, ch chan KeyValue, wg *sync.WaitGroup) {
+	f, err := os.OpenFile(filename, os.O_CREATE|os.O_RDWR, 0600)
+	if err != nil {
+		log.Fatal(err)
+	}
+	defer func() {
+		if err := f.Close(); err != nil {
+			log.Fatal(err)
+		}
+	}()
+	enc := json.NewEncoder(f)
+	for kv := range ch {
+		if err := enc.Encode(kv); err != nil {
+			log.Fatal(err)
+		}
+		wg.Done()
+	}
+
 }
