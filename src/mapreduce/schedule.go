@@ -40,15 +40,13 @@ func schedule(jobName string, mapFiles []string, nReduce int, phase jobPhase, re
 		if phase == mapPhase {
 			file = mapFiles[i]
 		}
-		func(taskNumber int) {
-			taskQueue <- DoTaskArgs{
-				JobName:       jobName,
-				File:          file,
-				Phase:         phase,
-				TaskNumber:    taskNumber,
-				NumOtherPhase: n_other,
-			}
-		}(i)
+		taskQueue <- DoTaskArgs{
+			JobName:       jobName,
+			File:          file,
+			Phase:         phase,
+			TaskNumber:    i,
+			NumOtherPhase: n_other,
+		}
 	}
 	go func() {
 		for task := range taskQueue {
