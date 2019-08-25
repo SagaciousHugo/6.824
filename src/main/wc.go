@@ -20,7 +20,7 @@ import (
 //
 func mapF(filename string, contents string) []mapreduce.KeyValue {
 	// Your code here (Part II).
-	var res []mapreduce.KeyValue
+	var kvs []mapreduce.KeyValue
 	var letterContents bytes.Buffer
 	for _, r := range contents {
 		if ok := unicode.IsLetter(r); ok {
@@ -32,9 +32,9 @@ func mapF(filename string, contents string) []mapreduce.KeyValue {
 	words := strings.Fields(letterContents.String())
 	for _, w := range words {
 		kv := mapreduce.KeyValue{w, ""}
-		res = append(res, kv)
+		kvs = append(kvs, kv)
 	}
-	return res
+	return kvs
 }
 
 //
