@@ -36,10 +36,6 @@ type Raft struct {
 	peers     []*labrpc.ClientEnd // RPC end points of all peers
 	persister *Persister          // Object to hold this peer's persisted state
 	me        int                 // this peer's index into peers[]
-
-	// Your data here (2A, 2B, 2C).
-	// Look at the paper's Figure 2 for a description of what
-	// state a Raft server must maintain.
 	machineCh chan int
 	state     int      // raft state FOLLOWER，CANDIDATE，LEADER
 	heartBeat chan int // heartbeat chan used by FOLLOWER
@@ -76,7 +72,6 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	rf.peers = peers
 	rf.persister = persister
 	rf.me = me
-	rf.state = FOLLOWER
 	rf.heartBeat = make(chan int, 10)
 	rf.machineCh = make(chan int, 200)
 	ctx, cancel := context.WithCancel(context.Background())
@@ -84,6 +79,10 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	rf.ctx = ctx
 	// initialize from state persisted before a crash
 	rf.readPersist(persister.ReadRaftState())
+	if rf.state == LEADER {
+		rf.committingIndex = rf.committedIndex
+	}
+	rf.state = FOLLOWER
 	go rf.stateMachine(rf.ctx, applyCh)
 	go rf.doFollower()
 	return rf
@@ -112,13 +111,14 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 	} else {
 		entry := Entry{
 			Term:    rf.currentTerm,
-			Index:   len(rf.log),
+			Index:   len(rf.log) + 1,
 			Command: command,
 		}
 		rf.log = append(rf.log, entry)
 		rf.nextIndex[rf.me] = len(rf.log) + 1
 		rf.matchIndex[rf.me] = len(rf.log)
 		go rf.sendAllHeartbeat()
+		rf.committingIndex = rf.committedIndex
 		DPrintf("---------------------leader %d (term %d) start command %v and committingIndex = %d committedIndex = %d matchIndex= %v nextIndex = %v  log = %v\n", rf.me, rf.currentTerm, command, rf.committingIndex, rf.committedIndex, rf.matchIndex, rf.nextIndex, rf.log)
 		return rf.matchIndex[rf.me], rf.currentTerm, true
 	}
@@ -162,6 +162,7 @@ func (rf *Raft) persist() {
 	e.Encode(rf.committedIndex)
 	e.Encode(rf.lastApplied)
 	e.Encode(rf.log[:rf.committingIndex])
+	e.Encode(rf.state)
 	data := w.Bytes()
 	rf.persister.SaveRaftState(data)
 }
@@ -184,14 +185,15 @@ func (rf *Raft) readPersist(data []byte) {
 	d.Decode(&rf.committedIndex)
 	d.Decode(&rf.lastApplied)
 	d.Decode(&rf.log)
+	d.Decode(&rf.state)
 	DPrintf("server %d init params currentTerm = %d votedFor = %d committingIndex = %d committedIndex= %d lastApplied = %d log= %v", rf.me, rf.currentTerm, rf.votedFor, rf.committingIndex, rf.committedIndex, rf.lastApplied, rf.log)
 }
 
 // need lock during call this func
 func (rf *Raft) vote(server int) bool {
 	if rf.votedFor == -1 {
-		rf.persist()
 		rf.votedFor = server
+		rf.persist()
 		return true
 	} else if rf.votedFor == server {
 		return true
@@ -427,7 +429,7 @@ func (rf *Raft) doElection(ctx context.Context) (succ bool, err error) {
 
 func (rf *Raft) initLeader() {
 	rf.state = LEADER
-	if rf.committingIndex > 1 {
+	if rf.committingIndex > 0 {
 		rf.log = rf.log[:rf.committingIndex]
 	}
 	rf.matchIndex = make([]int, len(rf.peers))

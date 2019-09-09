@@ -102,7 +102,6 @@ func (rf *Raft) RequestAppendEntries(args *RequestAppendEntriesArgs, reply *Requ
 				return
 			} else {
 				rf.log = rf.log[:conflictIndex-1]
-				rf.persist()
 			}
 		}
 		for ; i < len(args.Entries); i++ {
@@ -131,8 +130,8 @@ func (rf *Raft) RequestAppendEntries(args *RequestAppendEntriesArgs, reply *Requ
 
 func (rf *Raft) sendRequestAppendEntries(server int, args *RequestAppendEntriesArgs, reply *RequestAppendEntriesReply) bool {
 	ok := rf.peers[server].Call("Raft.RequestAppendEntries", args, reply)
-	if ok {
+	/*if ok {
 		DPrintf("LEADER %d send sever %d RequestAppendEntries ok = %v args = %+v reply = %+v\n", rf.me, server, ok, args, reply)
-	}
+	}*/
 	return ok
 }
