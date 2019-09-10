@@ -1,6 +1,8 @@
 package raft
 
-import "fmt"
+import (
+	"context"
+)
 
 func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 	rf.mu.Lock()
@@ -8,11 +10,9 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 	if rf.currentTerm > args.Term {
 		reply.Term = rf.currentTerm
 		reply.VoteGranted = false
-	} else if rf.currentTerm == args.Term && rf.logIsNewerOrEqual(args.LastCommittingLogTerm, args.LastCommittingLogIndex) {
-		if rf.state == LEADER {
-			reply.Term = rf.currentTerm
-			reply.VoteGranted = false
-		} else if rf.state == CANDIDATE {
+	} else {
+		rf.updateCurrentTerm(args.Term)
+		if rf.replyLogIsNewerOrEqual(args.LastLogTerm, args.LastLogIndex) {
 			if ok := rf.vote(args.CandidateId); ok {
 				rf.state = FOLLOWER
 				reply.Term = rf.currentTerm
@@ -22,37 +22,38 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 				reply.VoteGranted = false
 			}
 		} else {
-			if ok := rf.vote(args.CandidateId); ok {
-				reply.Term = rf.currentTerm
-				reply.VoteGranted = true
-			} else {
-				reply.Term = rf.currentTerm
-				reply.VoteGranted = false
-			}
-		}
-	} else if rf.currentTerm < args.Term && rf.logIsNewerOrEqual(args.LastCommittingLogTerm, args.LastCommittingLogIndex) {
-		rf.updateCurrentTerm(args.Term)
-		rf.state = FOLLOWER
-		if ok := rf.vote(args.CandidateId); ok {
-			reply.Term = rf.currentTerm
-			reply.VoteGranted = true
-		} else {
 			reply.Term = rf.currentTerm
 			reply.VoteGranted = false
 		}
-	} else {
-		reply.Term = rf.currentTerm
-		reply.VoteGranted = false
 	}
-	reply.LastCommittingLogIndex = rf.committingIndex
-	if reply.LastCommittingLogIndex > 0 {
-		reply.LastCommittingLogTerm = rf.log[reply.LastCommittingLogIndex-1].Term
+	reply.LastLogIndex = len(rf.log)
+	if reply.LastLogIndex > 0 {
+		reply.LastLogTerm = rf.log[reply.LastLogIndex-1].Term
 	}
+	DPrintf("server %d received from candidate %d args = %v reply = %v\n", rf.me, args.CandidateId, args, reply)
 }
 
-func (rf *Raft) sendRequestVote(server int, args *RequestVoteArgs, reply *RequestVoteReply) bool {
-	ok := rf.peers[server].Call("Raft.RequestVote", args, reply)
-	return ok
+func (rf *Raft) sendRequestVote(ctx context.Context, server int, args *RequestVoteArgs, replyCh chan *RequestVoteReply) {
+	var reply *RequestVoteReply
+	res := make(chan bool)
+Loop:
+	for {
+		reply = &RequestVoteReply{}
+		go func() {
+			ok := rf.peers[server].Call("Raft.RequestVote", args, reply)
+			res <- ok
+		}()
+		select {
+		case <-ctx.Done():
+			return
+		case ok := <-res:
+			if ok {
+				DPrintf("CANDIDATE %d send server %d requestVote args = %+v reply = %+v\n", rf.me, server, args, reply)
+				replyCh <- reply
+				break Loop
+			}
+		}
+	}
 }
 
 func (rf *Raft) RequestAppendEntries(args *RequestAppendEntriesArgs, reply *RequestAppendEntriesReply) {
@@ -61,12 +62,11 @@ func (rf *Raft) RequestAppendEntries(args *RequestAppendEntriesArgs, reply *Requ
 	if rf.currentTerm > args.Term {
 		reply.Success = false
 		reply.Term = rf.currentTerm
-		reply.FollowerCommitting = rf.committingIndex
 		return
 	} else {
-		if rf.state == LEADER && rf.currentTerm == args.Term {
+		/*if rf.state == LEADER && rf.currentTerm == args.Term {
 			panic(fmt.Errorf("there have two leaders %d %d in term %d", rf.me, args.LeaderId, args.Term))
-		}
+		}*/
 		rf.state = FOLLOWER
 		rf.updateCurrentTerm(args.Term)
 		go func() {
@@ -75,9 +75,7 @@ func (rf *Raft) RequestAppendEntries(args *RequestAppendEntriesArgs, reply *Requ
 		if args.PrevLogIndex > len(rf.log) || args.PrevLogIndex > 0 && rf.log[args.PrevLogIndex-1].Term != args.PrevLogTerm {
 			reply.Success = false
 			reply.Term = rf.currentTerm
-			reply.FollowerCommitting = rf.committingIndex
-			reply.ConflictIndex = Min(len(rf.log), args.PrevLogIndex)
-			rf.committingIndex = rf.committedIndex
+			reply.ConflictIndex = Min(rf.committedIndex+1, len(rf.log))
 			return
 		}
 		i := 0
@@ -88,16 +86,14 @@ func (rf *Raft) RequestAppendEntries(args *RequestAppendEntriesArgs, reply *Requ
 			}
 			if rf.log[args.PrevLogIndex+i].Term != args.Entries[i].Term {
 				conflictIndex = args.PrevLogIndex + i + 1
-				DPrintf("server %d log conflictIndex = %d  with leader args = %+v server log = %v committing = %d committed = %d\n", rf.me, conflictIndex, args, rf.log, rf.committingIndex, rf.committedIndex)
+				DPrintf("server %d log conflictIndex = %d  with leader args = %+v server log = %v committed = %d\n", rf.me, conflictIndex, args, rf.log, rf.committedIndex)
 				break
 			}
 		}
 		if conflictIndex > 0 {
-			rf.committingIndex = rf.committedIndex
 			if conflictIndex <= rf.committedIndex {
 				reply.Success = false
 				reply.Term = rf.currentTerm
-				reply.FollowerCommitting = rf.committingIndex
 				reply.ConflictIndex = conflictIndex
 				return
 			} else {
@@ -107,15 +103,11 @@ func (rf *Raft) RequestAppendEntries(args *RequestAppendEntriesArgs, reply *Requ
 		for ; i < len(args.Entries); i++ {
 			rf.log = append(rf.log, args.Entries[i])
 		}
-		oldCommitting := rf.committingIndex
 		oldCommitted := rf.committedIndex
-		if args.LeaderCommitting > rf.committingIndex {
-			rf.committingIndex = Min(args.LeaderCommitting, len(rf.log))
-		}
 		if args.LeaderCommitted > rf.committedIndex {
 			rf.committedIndex = Min(args.LeaderCommitted, len(rf.log))
 		}
-		if oldCommitting != rf.committingIndex || oldCommitted != rf.committedIndex {
+		if oldCommitted != rf.committedIndex {
 			rf.persist()
 			go func() {
 				rf.machineCh <- 1
@@ -123,7 +115,6 @@ func (rf *Raft) RequestAppendEntries(args *RequestAppendEntriesArgs, reply *Requ
 		}
 		reply.Success = true
 		reply.Term = rf.currentTerm
-		reply.FollowerCommitting = rf.committingIndex
 		reply.ConflictIndex = 0
 	}
 }
