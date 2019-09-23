@@ -454,8 +454,8 @@ func (rf *Raft) doElection() bool {
 		// check if state switch in waiting vote
 		rf.mu.Lock()
 		if rf.state != CANDIDATE {
-			rf.mu.Unlock()
 			DPrintf("CANDIDATE %d election failed now state is %s\n", rf.me, stateMap[rf.state])
+			rf.mu.Unlock()
 			return false
 		} else {
 			rf.mu.Unlock()

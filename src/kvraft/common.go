@@ -1,34 +1,40 @@
 package raftkv
 
-const (
-	OK       = "OK"
-	ErrNoKey = "ErrNoKey"
-)
+import "raft"
 
-type Err string
+const (
+	OK                 = "OK"
+	ErrNoKey           = "ErrNoKey"
+	ErrWrongLeader     = "ErrWrongLeader"
+	ErrOpTimeout       = "ErrOpTimeout"
+	ErrKVServerClosed  = "ErrKVServerClosed"
+	ErrOutdatedRequest = "ErrOutdatedRequest"
+	OpTimeout          = raft.ELECTIONTIMEOUT
+	ClientOpWait       = raft.HEARTBEAT
+	NotifyKeyFormat    = "%d_%d"
+)
 
 // Put or Append
 type PutAppendArgs struct {
-	Key   string
-	Value string
-	Op    string // "Put" or "Append"
-	// You'll have to add definitions here.
-	// Field names must start with capital letters,
-	// otherwise RPC will break.
+	Key      string
+	Value    string
+	Op       string // "Put" or "Append"
+	OpId     int64
+	ClientId int64
 }
 
 type PutAppendReply struct {
-	WrongLeader bool
-	Err         Err
+	Result string
 }
 
+// Get
 type GetArgs struct {
-	Key string
-	// You'll have to add definitions here.
+	Key      string
+	OpId     int64
+	ClientId int64
 }
 
 type GetReply struct {
-	WrongLeader bool
-	Err         Err
-	Value       string
+	Result string
+	Value  string
 }

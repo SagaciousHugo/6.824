@@ -1,11 +1,17 @@
 package raftkv
 
-import "labrpc"
+import (
+	"labrpc"
+	"time"
+)
 import "crypto/rand"
 import "math/big"
 
 type Clerk struct {
-	servers []*labrpc.ClientEnd
+	servers  []*labrpc.ClientEnd
+	clientId int64
+	lastOpId int64
+	leaderId int
 	// You will have to modify this struct.
 }
 
@@ -19,6 +25,9 @@ func nrand() int64 {
 func MakeClerk(servers []*labrpc.ClientEnd) *Clerk {
 	ck := new(Clerk)
 	ck.servers = servers
+	ck.leaderId = 0
+	ck.clientId = nrand()
+	ck.lastOpId = 0
 	// You'll have to add code here.
 	return ck
 }
@@ -36,9 +45,42 @@ func MakeClerk(servers []*labrpc.ClientEnd) *Clerk {
 // arguments. and reply must be passed as a pointer.
 //
 func (ck *Clerk) Get(key string) string {
-
 	// You will have to modify this function.
-	return ""
+	ck.lastOpId++
+	args := GetArgs{
+		Key:      key,
+		ClientId: ck.clientId,
+		OpId:     ck.lastOpId,
+	}
+	maxRetries := 5
+	retries := 0
+	for {
+		reply := GetReply{}
+		if ok := ck.servers[ck.leaderId].Call("KVServer.Get", &args, &reply); ok {
+			retries = 0
+			if reply.Result == OK {
+				//DPrintf("client %d request leader %d Get success args = %+v reply = %+v\n", ck.clientId, ck.leaderId, args, reply)
+				DPrintf("client %d request leader %d Get success args = %+v \n", ck.clientId, ck.leaderId, args)
+				return reply.Value
+			} else if reply.Result == ErrNoKey {
+				DPrintf("client %d request leader %d Get no such key args = %+v reply = %+v\n", ck.clientId, ck.leaderId, args, reply)
+				return ""
+			} else if reply.Result == ErrWrongLeader {
+				ck.leaderId = (ck.leaderId + 1) % len(ck.servers)
+			}
+			if reply.Result != OK {
+				DPrintf("client %d request leader %d Get failed key args = %+v reply = %+v\n", ck.clientId, ck.leaderId, args, reply)
+			}
+		} else {
+			if retries >= maxRetries {
+				retries = 0
+				ck.leaderId = (ck.leaderId + 1) % len(ck.servers)
+			} else {
+				retries++
+			}
+		}
+		time.Sleep(OpTimeout)
+	}
 }
 
 //
@@ -53,6 +95,38 @@ func (ck *Clerk) Get(key string) string {
 //
 func (ck *Clerk) PutAppend(key string, value string, op string) {
 	// You will have to modify this function.
+	ck.lastOpId++
+	args := PutAppendArgs{
+		Key:      key,
+		Value:    value,
+		Op:       op,
+		OpId:     ck.lastOpId,
+		ClientId: ck.clientId,
+	}
+	maxRetries := 5
+	retries := 0
+	for {
+		reply := PutAppendReply{}
+		if ok := ck.servers[ck.leaderId].Call("KVServer.PutAppend", &args, &reply); ok {
+			if reply.Result == OK {
+				DPrintf("client %d request leader %d %s success args = %+v reply = %+v\n", ck.clientId, ck.leaderId, args.Op, args, reply)
+				return
+			} else if reply.Result == ErrWrongLeader {
+				ck.leaderId = (ck.leaderId + 1) % len(ck.servers)
+			}
+			if reply.Result != OK {
+				DPrintf("client %d request leader %d %s failed args = %+v reply = %v\n", ck.clientId, ck.leaderId, args.Op, args, reply)
+			}
+		} else {
+			if retries >= maxRetries {
+				retries = 0
+				ck.leaderId = (ck.leaderId + 1) % len(ck.servers)
+			} else {
+				retries++
+			}
+		}
+		time.Sleep(ClientOpWait)
+	}
 }
 
 func (ck *Clerk) Put(key string, value string) {
