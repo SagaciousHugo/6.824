@@ -40,3 +40,17 @@ type RequestAppendEntriesReply struct {
 	Success       bool // true if follower contained entry matching prevLogIndex and prevLogTerm
 	ConflictIndex int  // conflict index for follower log and leader RequestAppendEntries args
 }
+
+type RequestInstallSnapshotArgs struct {
+	Term              int // leader’s term
+	LeaderId          int // so follower can redirect clients
+	LastIncludedIndex int // the snapshot replaces all entries up through and including this index
+	LastIncludedTerm  int // term of lastIncludedIndex
+	//Offset            int    // byte offset where chunk is positioned in the snapshot file
+	Data []byte // raw bytes of the snapshot chunk, starting at offset
+	//Done bool   // true if this is the last chunk
+}
+
+type RequestInstallSnapshotReply struct {
+	Term int // currentTerm, for leader to update itself
+}

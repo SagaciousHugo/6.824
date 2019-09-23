@@ -2,6 +2,7 @@ package raft
 
 import (
 	"context"
+	"fmt"
 )
 
 func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
@@ -11,10 +12,12 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 		reply.Term = rf.currentTerm
 		reply.VoteGranted = false
 	} else {
-		rf.updateCurrentTerm(args.Term)
+		if rf.currentTerm < args.Term {
+			rf.updateCurrentTerm(args.Term)
+			rf.state = FOLLOWER
+		}
 		if rf.replyLogIsNewerOrEqual(args.LastLogTerm, args.LastLogIndex) {
 			if ok := rf.vote(args.CandidateId); ok {
-				rf.state = FOLLOWER
 				reply.Term = rf.currentTerm
 				reply.VoteGranted = true
 			} else {
@@ -26,16 +29,14 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 			reply.VoteGranted = false
 		}
 	}
-	reply.LastLogIndex = len(rf.log)
-	if reply.LastLogIndex > 0 {
-		reply.LastLogTerm = rf.log[reply.LastLogIndex-1].Term
-	}
-	DPrintf("server %d received from candidate %d args = %v reply = %v\n", rf.me, args.CandidateId, args, reply)
+	reply.LastLogIndex = rf.lastLogIndex
+	reply.LastLogTerm = rf.getLogEntryTerm(rf.lastLogIndex)
+	//DPrintf("server %d received from candidate %d args = %+v reply = %+v\n", rf.me, args.CandidateId, args, reply)
 }
 
 func (rf *Raft) sendRequestVote(ctx context.Context, server int, args *RequestVoteArgs, replyCh chan *RequestVoteReply) {
 	var reply *RequestVoteReply
-	res := make(chan bool)
+	res := make(chan bool, 1)
 Loop:
 	for {
 		reply = &RequestVoteReply{}
@@ -69,49 +70,68 @@ func (rf *Raft) RequestAppendEntries(args *RequestAppendEntriesArgs, reply *Requ
 		}*/
 		rf.state = FOLLOWER
 		rf.updateCurrentTerm(args.Term)
+		rf.leaderId = args.LeaderId
 		go func() {
 			rf.heartBeat <- 1
 		}()
-		if args.PrevLogIndex > len(rf.log) || args.PrevLogIndex > 0 && rf.log[args.PrevLogIndex-1].Term != args.PrevLogTerm {
+		if args.PrevLogIndex > rf.lastLogIndex {
 			reply.Success = false
 			reply.Term = rf.currentTerm
-			reply.ConflictIndex = Min(rf.committedIndex+1, len(rf.log))
+			reply.ConflictIndex = Min(rf.committedIndex+1, rf.lastLogIndex)
+			return
+		} else if args.PrevLogIndex < rf.lastIncludedIndex {
+			reply.Success = false
+			reply.Term = rf.currentTerm
+			reply.ConflictIndex = rf.lastIncludedIndex + 1
+			DPrintf("server %d reject RequestAppendEntries args.PrevLogIndex < rf.lastIncludedIndex\n", rf.me)
+			return
+		} else if rf.getLogEntryTerm(args.PrevLogIndex) != args.PrevLogTerm {
+			reply.Success = false
+			reply.Term = rf.currentTerm
+			reply.ConflictIndex = args.PrevLogIndex
+			DPrintf("server %d reject RequestAppendEntries rf.getLogEntryTerm(args.PrevLogIndex) != args.PrevLogTerm\n", rf.me)
 			return
 		}
+		// lastIncludedIndex <= lastApplied <= committedIndex <= lastLogIndex
+		// prevLogIndex in range [lastIncludedIndex, lastLogIndex]
 		i := 0
 		conflictIndex := 0
+		baseIndex := args.PrevLogIndex + 1
+		logChanged := false
 		for ; i < len(args.Entries); i++ {
-			if len(rf.log) <= args.PrevLogIndex+i {
+			if rf.lastLogIndex < baseIndex+i {
 				break
 			}
-			if rf.log[args.PrevLogIndex+i].Term != args.Entries[i].Term {
+			if rf.getLogEntryTerm(baseIndex+i) != args.Entries[i].Term {
 				conflictIndex = args.PrevLogIndex + i + 1
-				DPrintf("server %d log conflictIndex = %d  with leader args = %+v server log = %v committed = %d\n", rf.me, conflictIndex, args, rf.log, rf.committedIndex)
+				if conflictIndex <= rf.committedIndex {
+					reply.Success = false
+					reply.Term = rf.currentTerm
+					reply.ConflictIndex = conflictIndex
+					panic(fmt.Errorf("leader %d conflict %d with server %d committedIndex leader args %+v server rf log=%+v committedIndex= %d lastApplied=%d lastIncludeIndex=%d\n", args.LeaderId, rf.me, conflictIndex, args, rf.log[conflictIndex-1:], rf.committedIndex, rf.lastApplied, rf.lastIncludedIndex))
+					return
+				} else {
+					rf.deleteLogEntries(conflictIndex - 1)
+					logChanged = true
+				}
+				//DPrintf("server %d log conflictIndex = %d  with leader args = %+v server log = %v committed = %d\n", rf.me, conflictIndex, args, rf.log, rf.committedIndex)
 				break
-			}
-		}
-		if conflictIndex > 0 {
-			if conflictIndex <= rf.committedIndex {
-				reply.Success = false
-				reply.Term = rf.currentTerm
-				reply.ConflictIndex = conflictIndex
-				return
-			} else {
-				rf.log = rf.log[:conflictIndex-1]
 			}
 		}
 		for ; i < len(args.Entries); i++ {
 			rf.log = append(rf.log, args.Entries[i])
+			rf.lastLogIndex++
+			logChanged = true
 		}
 		oldCommitted := rf.committedIndex
 		if args.LeaderCommitted > rf.committedIndex {
-			rf.committedIndex = Min(args.LeaderCommitted, len(rf.log))
+			rf.committedIndex = Min(args.LeaderCommitted, rf.lastLogIndex)
 		}
 		if oldCommitted != rf.committedIndex {
 			rf.persist()
-			go func() {
-				rf.machineCh <- 1
-			}()
+			rf.notifyStateMachine(StateMachineNewCommitted)
+		} else if logChanged {
+			rf.persist()
 		}
 		reply.Success = true
 		reply.Term = rf.currentTerm
@@ -123,6 +143,44 @@ func (rf *Raft) sendRequestAppendEntries(server int, args *RequestAppendEntriesA
 	ok := rf.peers[server].Call("Raft.RequestAppendEntries", args, reply)
 	/*if ok {
 		DPrintf("LEADER %d send sever %d RequestAppendEntries ok = %v args = %+v reply = %+v\n", rf.me, server, ok, args, reply)
+	}*/
+	return ok
+}
+
+func (rf *Raft) RequestInstallSnapshot(args *RequestInstallSnapshotArgs, reply *RequestInstallSnapshotReply) {
+	rf.mu.Lock()
+	defer rf.mu.Unlock()
+	if rf.currentTerm > args.Term {
+		reply.Term = rf.currentTerm
+		return
+	}
+	rf.updateCurrentTerm(args.Term)
+	rf.state = FOLLOWER
+	rf.leaderId = args.LeaderId
+	reply.Term = rf.currentTerm
+	go func() {
+		rf.heartBeat <- 1
+	}()
+	if rf.lastIncludedIndex < args.LastIncludedIndex {
+		if rf.lastLogIndex > args.LastIncludedIndex {
+			rf.log = rf.log[args.LastIncludedIndex+1-rf.lastIncludedIndex-1:]
+		} else {
+			rf.log = nil
+			rf.lastLogIndex = args.LastIncludedIndex
+		}
+		rf.lastIncludedIndex = args.LastIncludedIndex
+		rf.lastIncludedTerm = args.LastIncludedTerm
+		rf.lastApplied = args.LastIncludedIndex
+		rf.persister.SaveStateAndSnapshot(rf.persister.ReadRaftState(), args.Data)
+		rf.notifyStateMachine(StateMachineInstallSnapshotStart)
+	}
+}
+
+func (rf *Raft) sendRequestInstallSnapshot(server int, args *RequestInstallSnapshotArgs, reply *RequestInstallSnapshotReply) bool {
+	ok := rf.peers[server].Call("Raft.RequestInstallSnapshot", args, reply)
+	/*if ok {
+		args.Data = nil
+		DPrintf("LEADER %d send sever %d Raft.RequestInstallSnapshot ok = %v args = %+v reply = %+v\n", rf.me, server, ok, args, reply)
 	}*/
 	return ok
 }

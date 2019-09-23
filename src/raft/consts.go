@@ -3,9 +3,17 @@ package raft
 import "time"
 
 const (
-	HEARTBEATTIMEOUT = 150 * time.Millisecond
-	HEARTBEAT        = 100 * time.Millisecond
-	ELECTIONTIMEOUT  = 300 * time.Millisecond
+	HEARTBEATTIMEOUT       = 150 * time.Millisecond
+	HEARTBEAT              = 100 * time.Millisecond
+	ELECTIONTIMEOUT        = 300 * time.Millisecond
+	CommandInstallSnapshot = "RaftCommandInstallSnapshot"
+)
+
+const (
+	StateMachineNewCommitted = iota
+	StateMachineInstallSnapshotStart
+	StateMachineInstallSnapshotEnd
+	StateMachineNewLeader
 )
 
 const (
