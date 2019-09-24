@@ -79,18 +79,34 @@ func (rf *Raft) RequestAppendEntries(args *RequestAppendEntriesArgs, reply *Requ
 			reply.Term = rf.currentTerm
 			reply.ConflictIndex = Min(rf.committedIndex+1, rf.lastLogIndex)
 			return
-		} else if args.PrevLogIndex < rf.lastIncludedIndex {
-			reply.Success = false
-			reply.Term = rf.currentTerm
-			reply.ConflictIndex = rf.lastIncludedIndex + 1
-			DPrintf("server %d reject RequestAppendEntries args.PrevLogIndex < rf.lastIncludedIndex\n", rf.me)
-			return
-		} else if rf.getLogEntryTerm(args.PrevLogIndex) != args.PrevLogTerm {
+		}
+		if args.PrevLogIndex < rf.lastIncludedIndex {
+			if args.PrevLogIndex+len(args.Entries) < rf.lastIncludedIndex {
+				reply.Success = true
+				reply.Term = rf.currentTerm
+				reply.ConflictIndex = 0
+				return
+			}
+			index := rf.lastIncludedIndex - args.PrevLogIndex
+			args.PrevLogIndex = rf.lastIncludedIndex
+			args.PrevLogTerm = args.Entries[index-1].Term
+			if len(args.Entries) > index {
+				args.Entries = args.Entries[index:]
+			} else {
+				args.Entries = nil
+			}
+		}
+		if rf.getLogEntryTerm(args.PrevLogIndex) != args.PrevLogTerm {
 			reply.Success = false
 			reply.Term = rf.currentTerm
 			reply.ConflictIndex = args.PrevLogIndex
-			DPrintf("server %d reject RequestAppendEntries rf.getLogEntryTerm(args.PrevLogIndex) != args.PrevLogTerm\n", rf.me)
+			DPrintf("server %d reject RequestAppendEntries rf.getLogEntryTerm(args.PrevLogIndex) != args.PrevLogTerm  args = %+v log= %+v\n", rf.me, args, rf.log)
 			return
+			/*reply.Success = false
+			reply.Term = rf.currentTerm
+			reply.ConflictIndex = rf.lastIncludedIndex + 1
+			DPrintf("server %d reject RequestAppendEntries args.PrevLogIndex < rf.lastIncludedIndex\n", rf.me)
+			return*/
 		}
 		// lastIncludedIndex <= lastApplied <= committedIndex <= lastLogIndex
 		// prevLogIndex in range [lastIncludedIndex, lastLogIndex]
@@ -171,8 +187,19 @@ func (rf *Raft) RequestInstallSnapshot(args *RequestInstallSnapshotArgs, reply *
 		rf.lastIncludedIndex = args.LastIncludedIndex
 		rf.lastIncludedTerm = args.LastIncludedTerm
 		rf.lastApplied = args.LastIncludedIndex
+		if rf.committedIndex < rf.lastApplied {
+			rf.committedIndex = rf.lastApplied
+			// 假如刚完成installsnapshot，原Leader挂了，本server成为leader 就可能会出现rf.committedIndex < rf.lastApplied的情况
+		}
 		rf.persister.SaveStateAndSnapshot(rf.persister.ReadRaftState(), args.Data)
-		rf.notifyStateMachine(StateMachineInstallSnapshotStart)
+		rf.notifyStateMachine(StateMachineInstallSnapshot)
+		/*r := bytes.NewBuffer(args.Data)
+		args.Data = nil
+		d := labgob.NewDecoder(r)
+		var database map[string]string
+		d.Decode(&database)
+		DPrintf("server %d received LEADER %d Raft.RequestInstallSnapshot args = %+v reply = %+v database=%+v \n", rf.me, args.LeaderId, args, reply, database)
+		*/
 	}
 }
 
@@ -182,5 +209,20 @@ func (rf *Raft) sendRequestInstallSnapshot(server int, args *RequestInstallSnaps
 		args.Data = nil
 		DPrintf("LEADER %d send sever %d Raft.RequestInstallSnapshot ok = %v args = %+v reply = %+v\n", rf.me, server, ok, args, reply)
 	}*/
+	/*if ok {
+		r := bytes.NewBuffer(args.Data)
+		args.Data = nil
+		d := labgob.NewDecoder(r)
+		var database map[string]string
+		d.Decode(&database)
+		DPrintf("LEADER %d send server %d Raft.RequestInstallSnapshot args = %+v reply = %+v database=%+v \n", rf.me, server, args, reply, database)
+	}*/
 	return ok
+}
+
+type OpResult struct {
+	ClientId int64
+	OpId     int64
+	Result   string
+	Value    string
 }

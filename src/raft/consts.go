@@ -11,9 +11,7 @@ const (
 
 const (
 	StateMachineNewCommitted = iota
-	StateMachineInstallSnapshotStart
-	StateMachineInstallSnapshotEnd
-	StateMachineNewLeader
+	StateMachineInstallSnapshot
 )
 
 const (

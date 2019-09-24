@@ -87,6 +87,7 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	rf.readPersist(persister.ReadRaftState())
 	rf.state = FOLLOWER
 	rf.leaderId = -1
+	rf.machineCh <- StateMachineNewCommitted
 	go rf.stateMachine()
 	go rf.doFollower()
 	return rf
@@ -141,7 +142,6 @@ func (rf *Raft) Kill() {
 	rf.state = STOPED
 	rf.mu.Unlock()
 	rf.close()
-	close(rf.machineCh)
 }
 
 // return currentTerm and whether this server
@@ -152,18 +152,22 @@ func (rf *Raft) GetState() (int, bool) {
 	return rf.currentTerm, rf.state == LEADER
 }
 
-func (rf *Raft) Replay() {
+/*func (rf *Raft) InstallSnapshotFinishedAndReplay() {
+	defer func() {
+		rf.notifyStateMachine(StateMachineInstallSnapshotEnd)
+	}()
 	rf.mu.Lock()
+	defer rf.mu.Unlock()
 	rf.lastApplied = rf.lastIncludedIndex
-	rf.mu.Unlock()
-	rf.notifyStateMachine(StateMachineNewCommitted)
-}
+}*/
 
-func (rf *Raft) InstallSnapshotFinishedAndReplay() {
+func (rf *Raft) Replay() {
+	defer func() {
+		rf.notifyStateMachine(StateMachineNewCommitted)
+	}()
 	rf.mu.Lock()
+	defer rf.mu.Unlock()
 	rf.lastApplied = rf.lastIncludedIndex
-	rf.mu.Unlock()
-	rf.notifyStateMachine(StateMachineInstallSnapshotEnd)
 }
 
 func (rf *Raft) CommittedState() (int, []int, []int) {
@@ -176,13 +180,14 @@ func (rf *Raft) SaveSnapshot(newLastIncludedIndex int, snapshot []byte) {
 	rf.mu.Lock()
 	defer rf.mu.Unlock()
 	if newLastIncludedIndex > rf.lastIncludedIndex {
-		//DPrintf("server %d SaveStateAndSnapshot newLastIncludedIndex = %d rf.lastIncludedIndex = %d log= %v\n", rf.me, newLastIncludedIndex, rf.lastIncludedIndex, rf.log)
 		index := newLastIncludedIndex - rf.lastIncludedIndex
 		rf.lastIncludedIndex = newLastIncludedIndex
 		rf.lastIncludedTerm = rf.log[index-1].Term
 		rf.log = rf.log[index:]
 		raftState := rf.persister.ReadRaftState()
 		rf.persister.SaveStateAndSnapshot(raftState, snapshot)
+		//DPrintf("server %d SaveStateAndSnapshot newLastIncludedIndex = %d rf.lastIncludedIndex = %d log= %v\n", rf.me, newLastIncludedIndex, rf.lastIncludedIndex, rf.log)
+		//log.Printf("server %d SaveStateAndSnapshot newLastIncludedIndex = %d rf.lastIncludedIndex = %d log= %v\n", rf.me, newLastIncludedIndex, old, rf.log)
 	}
 }
 
@@ -200,7 +205,7 @@ func (rf *Raft) persist() {
 	e.Encode(rf.votedFor)
 	e.Encode(rf.lastLogIndex)
 	e.Encode(rf.committedIndex)
-	e.Encode(rf.lastApplied)
+	//e.Encode(rf.lastApplied)
 	e.Encode(rf.lastIncludedIndex)
 	e.Encode(rf.lastIncludedTerm)
 	e.Encode(rf.log)
@@ -224,10 +229,11 @@ func (rf *Raft) readPersist(data []byte) {
 	d.Decode(&rf.votedFor)
 	d.Decode(&rf.lastLogIndex)
 	d.Decode(&rf.committedIndex)
-	d.Decode(&rf.lastApplied)
+	//d.Decode(&rf.lastApplied)
 	d.Decode(&rf.lastIncludedIndex)
 	d.Decode(&rf.lastIncludedTerm)
 	d.Decode(&rf.log)
+	rf.lastApplied = rf.lastIncludedIndex
 	DPrintf("server %d init params currentTerm = %d votedFor = %d  committedIndex= %d lastApplied = %d log= %v", rf.me, rf.currentTerm, rf.votedFor, rf.committedIndex, rf.lastApplied, rf.log)
 }
 
@@ -364,7 +370,7 @@ func (rf *Raft) sendLog(server int) {
 				}
 				rf.updateCommitted()
 			} else {
-				rf.nextIndex[server] = Min(Max(rf.matchIndex[server], reply.ConflictIndex), rf.lastLogIndex)
+				rf.nextIndex[server] = Max(1, Min(rf.matchIndex[server], reply.ConflictIndex, rf.committedIndex))
 			}
 		}
 	}
@@ -417,8 +423,8 @@ func (rf *Raft) sendLogToAll() {
 func (rf *Raft) doElection() bool {
 	rf.mu.Lock()
 	if rf.state != CANDIDATE {
-		rf.mu.Unlock()
 		DPrintf("CANDIDATE %d election failed now state is %s\n", rf.me, stateMap[rf.state])
+		rf.mu.Unlock()
 		return false
 	}
 	rf.currentTerm++
@@ -487,8 +493,8 @@ func (rf *Raft) doElection() bool {
 			rf.mu.Lock()
 			if rf.state == CANDIDATE && rf.currentTerm == voteTerm {
 				rf.initLeader()
-				rf.mu.Unlock()
 				DPrintf("CANDIDATE %d win election in term %d \n", rf.me, rf.currentTerm)
+				rf.mu.Unlock()
 				return true
 			} else {
 				rf.mu.Unlock()
@@ -581,34 +587,24 @@ func (rf *Raft) doLeader() {
 
 func (rf *Raft) notifyStateMachine(msg int) {
 	go func() {
-		defer func() {
-			recover()
-		}()
 		rf.machineCh <- msg
 	}()
 }
 
 func (rf *Raft) stateMachine() {
-	installSnapshot := 0
 	for {
 		select {
 		case <-rf.ctx.Done():
 			DPrintf("server %d stateMachine closed \n", rf.me)
 			return
 		case msg := <-rf.machineCh:
-			if msg == StateMachineInstallSnapshotStart {
-				DPrintf("server %d stateMachine start waiting InstallSnapshot installSnapshot = %d\n", rf.me, installSnapshot)
-				installSnapshot++
+			if msg == StateMachineInstallSnapshot {
 				rf.applyCh <- ApplyMsg{
 					CommandValid: false,
 					CommandIndex: 0,
 					Command:      CommandInstallSnapshot,
 				}
-			} else if msg == StateMachineInstallSnapshotEnd {
-				DPrintf("server %d stateMachine end waiting InstallSnapshot installSnapshot = %d\n", rf.me, installSnapshot)
-				installSnapshot--
-			}
-			if installSnapshot == 0 {
+			} else {
 				rf.mu.Lock()
 				var baseIndex = rf.lastApplied
 				var executeCommands []Entry
@@ -629,7 +625,6 @@ func (rf *Raft) stateMachine() {
 					rf.mu.Lock()
 					if rf.lastApplied < baseIndex+len(executeCommands) {
 						rf.lastApplied = baseIndex + len(executeCommands)
-						rf.persist()
 					}
 					rf.mu.Unlock()
 				}

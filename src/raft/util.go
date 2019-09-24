@@ -12,18 +12,28 @@ func DPrintf(format string, a ...interface{}) (n int, err error) {
 	return
 }
 
-func Max(a, b int) int {
-	if a > b {
-		return a
-	} else {
-		return b
+func Max(params ...int) int {
+	if len(params) < 1 {
+		panic("at least one param")
 	}
+	max := params[0]
+	for i := 1; i < len(params); i++ {
+		if params[i] > max {
+			max = params[i]
+		}
+	}
+	return max
 }
 
-func Min(a, b int) int {
-	if a < b {
-		return a
-	} else {
-		return b
+func Min(params ...int) int {
+	if len(params) < 1 {
+		panic("at least one param")
 	}
+	min := params[0]
+	for i := 1; i < len(params); i++ {
+		if params[i] < min {
+			min = params[i]
+		}
+	}
+	return min
 }

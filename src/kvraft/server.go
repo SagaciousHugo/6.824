@@ -66,6 +66,7 @@ func (kv *KVServer) start(args interface{}) (result string, value string) {
 	}
 	kv.mu.Lock()
 	if lastOpResult, ok := kv.lastOpResultStore[op.ClientId]; ok && lastOpResult.OpId == op.OpId {
+		DPrintf("KVServer %d return client %d by store result = %+v\n", kv.me, op.ClientId, lastOpResult)
 		kv.mu.Unlock()
 		return lastOpResult.Result, lastOpResult.Value
 	} else if lastOpResult.OpId > op.OpId {
@@ -92,6 +93,7 @@ func (kv *KVServer) start(args interface{}) (result string, value string) {
 	case <-t.C:
 		return ErrOpTimeout, ""
 	case opResult := <-resultCh:
+		DPrintf("KVServer %d return client %d by resultCh result = %+v\n", kv.me, op.ClientId, opResult)
 		return opResult.Result, opResult.Value
 		/*if opResult.ClientId != op.ClientId || opResult.OpId != op.OpId {
 			return ErrWrongLeader, ""
@@ -136,7 +138,6 @@ func (kv *KVServer) stateMachine() {
 				if op, ok := applyMsg.Command.(OpArgs); !ok {
 					DPrintf("KVServer %d stateMachine received wrong type command %+v %v\n", kv.me, applyMsg, reflect.TypeOf(applyMsg.Command))
 				} else {
-					DPrintf("KVServer %d stateMachine received command %+v\n", kv.me, applyMsg)
 					if op.OpType == "Get" {
 						kv.mu.Lock()
 						if lastOpResult, ok := kv.lastOpResultStore[op.ClientId]; !ok || op.OpId > lastOpResult.OpId {
@@ -152,6 +153,7 @@ func (kv *KVServer) stateMachine() {
 								result.ClientId = op.ClientId
 							}
 							kv.lastOpResultStore[op.ClientId] = result
+							DPrintf("KVServer %d stateMachine execute command %+v result = %+v value= %v database= %v\n", kv.me, applyMsg, result, kv.database[op.Key], kv.database)
 							if resultCh, ok := kv.opResultNotifyChs[fmt.Sprintf(NotifyKeyFormat, op.ClientId, op.OpId)]; ok {
 								resultCh <- result
 							}
@@ -165,6 +167,7 @@ func (kv *KVServer) stateMachine() {
 							result.OpId = op.OpId
 							result.ClientId = op.ClientId
 							kv.database[op.Key] = op.Value
+							DPrintf("KVServer %d stateMachine execute command %+v result = %+v database= %v\n", kv.me, applyMsg, result, kv.database)
 							kv.lastOpResultStore[op.ClientId] = result
 							if resultCh, ok := kv.opResultNotifyChs[fmt.Sprintf(NotifyKeyFormat, op.ClientId, op.OpId)]; ok {
 								resultCh <- result
@@ -181,6 +184,7 @@ func (kv *KVServer) stateMachine() {
 							result.ClientId = op.ClientId
 							oldValue, _ := kv.database[op.Key]
 							kv.database[op.Key] = oldValue + op.Value
+							DPrintf("KVServer %d stateMachine execute command %+v result = %+v database= %v\n", kv.me, applyMsg, result, kv.database)
 							kv.lastOpResultStore[op.ClientId] = result
 							if resultCh, ok := kv.opResultNotifyChs[fmt.Sprintf(NotifyKeyFormat, op.ClientId, op.OpId)]; ok {
 								resultCh <- result
@@ -193,7 +197,9 @@ func (kv *KVServer) stateMachine() {
 			} else if command, ok := applyMsg.Command.(string); ok {
 				if command == raft.CommandInstallSnapshot {
 					DPrintf("KVServer %d stateMachine received InstallSnapshot %+v\n", kv.me, applyMsg)
+					kv.mu.Lock()
 					kv.init()
+					kv.mu.Unlock()
 					kv.rf.InstallSnapshotFinishedAndReplay()
 				}
 			}
