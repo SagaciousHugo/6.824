@@ -179,16 +179,16 @@ func (rf *Raft) RequestInstallSnapshot(args *RequestInstallSnapshotArgs, reply *
 	}()
 	if rf.lastIncludedIndex < args.LastIncludedIndex {
 		if rf.lastLogIndex > args.LastIncludedIndex {
-			rf.log = rf.log[args.LastIncludedIndex+1-rf.lastIncludedIndex-1:]
+			rf.log = append(make([]Entry, 0, DefaultRaftLogCap), rf.log[args.LastIncludedIndex+1-rf.lastIncludedIndex-1:]...)
 		} else {
-			rf.log = nil
+			rf.log = make([]Entry, 0, DefaultRaftLogCap)
 			rf.lastLogIndex = args.LastIncludedIndex
 		}
 		rf.lastIncludedIndex = args.LastIncludedIndex
 		rf.lastIncludedTerm = args.LastIncludedTerm
 		rf.lastApplied = args.LastIncludedIndex
-		if rf.committedIndex < rf.lastApplied {
-			rf.committedIndex = rf.lastApplied
+		if rf.committedIndex < args.LastIncludedIndex {
+			rf.committedIndex = args.LastIncludedIndex
 			// 假如刚完成installsnapshot，原Leader挂了，本server成为leader 就可能会出现rf.committedIndex < rf.lastApplied的情况
 		}
 		rf.persister.SaveStateAndSnapshot(rf.persister.ReadRaftState(), args.Data)

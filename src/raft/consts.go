@@ -7,6 +7,7 @@ const (
 	HEARTBEAT              = 100 * time.Millisecond
 	ELECTIONTIMEOUT        = 300 * time.Millisecond
 	CommandInstallSnapshot = "RaftCommandInstallSnapshot"
+	DefaultRaftLogCap      = 1000
 )
 
 const (
