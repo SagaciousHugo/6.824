@@ -52,34 +52,18 @@ func (ck *Clerk) Get(key string) string {
 		ClientId: ck.clientId,
 		OpId:     ck.lastOpId,
 	}
-	maxRetries := 5
-	retries := 0
 	for {
 		reply := GetReply{}
-		if ok := ck.servers[ck.leaderId].Call("KVServer.Get", &args, &reply); ok {
-			retries = 0
-			if reply.Result == OK {
-				//DPrintf("client %d request leader %d Get success args = %+v reply = %+v\n", ck.clientId, ck.leaderId, args, reply)
-				DPrintf("client %d request leader %d Get success args = %+v \n", ck.clientId, ck.leaderId, args)
-				return reply.Value
-			} else if reply.Result == ErrNoKey {
-				DPrintf("client %d request leader %d Get no such key args = %+v reply = %+v\n", ck.clientId, ck.leaderId, args, reply)
-				return ""
-			} else if reply.Result == ErrWrongLeader {
-				ck.leaderId = (ck.leaderId + 1) % len(ck.servers)
-			}
-			if reply.Result != OK {
-				DPrintf("client %d request leader %d Get failed key args = %+v reply = %+v\n", ck.clientId, ck.leaderId, args, reply)
-			}
+		if ck.servers[ck.leaderId].Call("KVServer.Get", &args, &reply); reply.Result == OK || reply.Result == ErrNoKey {
+			DPrintf("client %d request leader %d Get success args = %+v \n", ck.clientId, ck.leaderId, args)
+			return reply.Value
 		} else {
-			if retries >= maxRetries {
-				retries = 0
-				ck.leaderId = (ck.leaderId + 1) % len(ck.servers)
-			} else {
-				retries++
-			}
+			DPrintf("client %d request leader %d Get failed key args = %+v reply = %+v\n", ck.clientId, ck.leaderId, args, reply)
+			ck.leaderId = (ck.leaderId + 1) % len(ck.servers)
 		}
-		time.Sleep(OpTimeout)
+		if reply.Result != ErrWrongLeader {
+			time.Sleep(ClientOpWait)
+		}
 	}
 }
 
@@ -103,29 +87,18 @@ func (ck *Clerk) PutAppend(key string, value string, op string) {
 		OpId:     ck.lastOpId,
 		ClientId: ck.clientId,
 	}
-	maxRetries := 5
-	retries := 0
 	for {
 		reply := PutAppendReply{}
-		if ok := ck.servers[ck.leaderId].Call("KVServer.PutAppend", &args, &reply); ok {
-			if reply.Result == OK {
-				DPrintf("client %d request leader %d %s success args = %+v reply = %+v\n", ck.clientId, ck.leaderId, args.Op, args, reply)
-				return
-			} else if reply.Result == ErrWrongLeader {
-				ck.leaderId = (ck.leaderId + 1) % len(ck.servers)
-			}
-			if reply.Result != OK {
-				DPrintf("client %d request leader %d %s failed args = %+v reply = %v\n", ck.clientId, ck.leaderId, args.Op, args, reply)
-			}
+		if ck.servers[ck.leaderId].Call("KVServer.PutAppend", &args, &reply); reply.Result == OK {
+			DPrintf("client %d request leader %d %s success args = %+v reply = %+v\n", ck.clientId, ck.leaderId, args.Op, args, reply)
+			return
 		} else {
-			if retries >= maxRetries {
-				retries = 0
-				ck.leaderId = (ck.leaderId + 1) % len(ck.servers)
-			} else {
-				retries++
-			}
+			DPrintf("client %d request leader %d %s failed args = %+v reply = %v\n", ck.clientId, ck.leaderId, args.Op, args, reply)
+			ck.leaderId = (ck.leaderId + 1) % len(ck.servers)
 		}
-		time.Sleep(ClientOpWait)
+		if reply.Result != ErrWrongLeader {
+			time.Sleep(ClientOpWait)
+		}
 	}
 }
 

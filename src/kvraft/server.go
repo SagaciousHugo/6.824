@@ -28,15 +28,16 @@ type OpResult struct {
 }
 
 type KVServer struct {
-	mu           sync.Mutex
-	me           int
-	rf           *raft.Raft
-	applyCh      chan raft.ApplyMsg
-	ctx          context.Context
-	close        context.CancelFunc
-	persister    *raft.Persister
-	maxraftstate int // snapshot if log grows this big
-
+	mu                sync.Mutex
+	me                int
+	rf                *raft.Raft
+	applyCh           chan raft.ApplyMsg
+	ctx               context.Context
+	close             context.CancelFunc
+	persister         *raft.Persister
+	maxraftstate      int // snapshot if log grows this big
+	lastApplied       int
+	lastIncludedIndex int
 	database          map[string]string        // store kv data
 	lastOpResultStore map[int64]OpResult       // store client last op result
 	opResultNotifyChs map[string]chan OpResult // for notify the op has finished
@@ -123,6 +124,9 @@ func (kv *KVServer) PutAppend(args *PutAppendArgs, reply *PutAppendReply) {
 func (kv *KVServer) Kill() {
 	kv.rf.Kill()
 	kv.close()
+	kv.mu.Lock()
+	kv.saveKVServerState(true)
+	kv.mu.Unlock()
 	// Your code here, if desired.
 }
 
@@ -138,69 +142,75 @@ func (kv *KVServer) stateMachine() {
 				if op, ok := applyMsg.Command.(OpArgs); !ok {
 					DPrintf("KVServer %d stateMachine received wrong type command %+v %v\n", kv.me, applyMsg, reflect.TypeOf(applyMsg.Command))
 				} else {
-					if op.OpType == "Get" {
-						kv.mu.Lock()
-						if lastOpResult, ok := kv.lastOpResultStore[op.ClientId]; !ok || op.OpId > lastOpResult.OpId {
-							if value, ok := kv.database[op.Key]; ok {
+					DPrintf("KVServer %d stateMachine received command %+v \n", kv.me, applyMsg)
+					kv.mu.Lock()
+					if applyMsg.CommandIndex == kv.lastApplied+1 {
+						kv.lastApplied++
+						if op.OpType == "Get" {
+							if lastOpResult, ok := kv.lastOpResultStore[op.ClientId]; !ok || op.OpId > lastOpResult.OpId {
+								if value, ok := kv.database[op.Key]; ok {
+									result.Result = OK
+									result.Value = value
+									result.OpId = op.OpId
+									result.ClientId = op.ClientId
+								} else {
+									result.Result = ErrNoKey
+									result.Value = ""
+									result.OpId = op.OpId
+									result.ClientId = op.ClientId
+								}
+								kv.lastOpResultStore[op.ClientId] = result
+								//DPrintf("KVServer %d stateMachine execute command %+v result = %+v database= %v\n", kv.me, applyMsg, result, kv.database)
+								DPrintf("KVServer %d stateMachine execute command %+v result = %+v lastOpResultStore = %+v\n", kv.me, applyMsg, result, kv.lastOpResultStore[op.ClientId])
+								if resultCh, ok := kv.opResultNotifyChs[fmt.Sprintf(NotifyKeyFormat, op.ClientId, op.OpId)]; ok {
+									resultCh <- result
+								}
+								kv.saveKVServerState(false)
+							}
+						} else if op.OpType == "Put" {
+							if lastOpResult, ok := kv.lastOpResultStore[op.ClientId]; !ok || op.OpId > lastOpResult.OpId {
 								result.Result = OK
-								result.Value = value
-								result.OpId = op.OpId
-								result.ClientId = op.ClientId
-							} else {
-								result.Result = ErrNoKey
 								result.Value = ""
 								result.OpId = op.OpId
 								result.ClientId = op.ClientId
+								kv.database[op.Key] = op.Value
+								kv.lastOpResultStore[op.ClientId] = result
+								//DPrintf("KVServer %d stateMachine execute command %+v result = %+v database= %v\n", kv.me, applyMsg, result, kv.database)
+								DPrintf("KVServer %d stateMachine execute command %+v result = %+v \n", kv.me, applyMsg, result)
+								if resultCh, ok := kv.opResultNotifyChs[fmt.Sprintf(NotifyKeyFormat, op.ClientId, op.OpId)]; ok {
+									resultCh <- result
+								}
+								kv.saveKVServerState(false)
 							}
-							kv.lastOpResultStore[op.ClientId] = result
-							DPrintf("KVServer %d stateMachine execute command %+v result = %+v value= %v database= %v\n", kv.me, applyMsg, result, kv.database[op.Key], kv.database)
-							if resultCh, ok := kv.opResultNotifyChs[fmt.Sprintf(NotifyKeyFormat, op.ClientId, op.OpId)]; ok {
-								resultCh <- result
-							}
-						}
-						kv.mu.Unlock()
-					} else if op.OpType == "Put" {
-						kv.mu.Lock()
-						if lastOpResult, ok := kv.lastOpResultStore[op.ClientId]; !ok || op.OpId > lastOpResult.OpId {
-							result.Result = OK
-							result.Value = ""
-							result.OpId = op.OpId
-							result.ClientId = op.ClientId
-							kv.database[op.Key] = op.Value
-							DPrintf("KVServer %d stateMachine execute command %+v result = %+v database= %v\n", kv.me, applyMsg, result, kv.database)
-							kv.lastOpResultStore[op.ClientId] = result
-							if resultCh, ok := kv.opResultNotifyChs[fmt.Sprintf(NotifyKeyFormat, op.ClientId, op.OpId)]; ok {
-								resultCh <- result
-							}
-						}
-						kv.mu.Unlock()
-
-					} else if op.OpType == "Append" {
-						kv.mu.Lock()
-						if lastOpResult, ok := kv.lastOpResultStore[op.ClientId]; !ok || op.OpId > lastOpResult.OpId {
-							result.Result = OK
-							result.Value = ""
-							result.OpId = op.OpId
-							result.ClientId = op.ClientId
-							oldValue, _ := kv.database[op.Key]
-							kv.database[op.Key] = oldValue + op.Value
-							DPrintf("KVServer %d stateMachine execute command %+v result = %+v database= %v\n", kv.me, applyMsg, result, kv.database)
-							kv.lastOpResultStore[op.ClientId] = result
-							if resultCh, ok := kv.opResultNotifyChs[fmt.Sprintf(NotifyKeyFormat, op.ClientId, op.OpId)]; ok {
-								resultCh <- result
+						} else if op.OpType == "Append" {
+							if lastOpResult, ok := kv.lastOpResultStore[op.ClientId]; !ok || op.OpId > lastOpResult.OpId {
+								result.Result = OK
+								result.Value = ""
+								result.OpId = op.OpId
+								result.ClientId = op.ClientId
+								oldValue, _ := kv.database[op.Key]
+								kv.database[op.Key] = oldValue + op.Value
+								kv.lastOpResultStore[op.ClientId] = result
+								//DPrintf("KVServer %d stateMachine execute command %+v result = %+v database= %v\n", kv.me, applyMsg, result, kv.database)
+								if resultCh, ok := kv.opResultNotifyChs[fmt.Sprintf(NotifyKeyFormat, op.ClientId, op.OpId)]; ok {
+									resultCh <- result
+								}
+								kv.saveKVServerState(false)
 							}
 						}
-						kv.mu.Unlock()
+					} else {
+						DPrintf("KVServer %d expect commandIndex= %d real = %+v\n", kv.me, kv.lastApplied+1, applyMsg)
+						if kv.lastApplied+1 < applyMsg.CommandIndex {
+							kv.rf.Replay()
+						}
 					}
-					kv.saveKVServerState(applyMsg.CommandIndex)
+					kv.mu.Unlock()
 				}
 			} else if command, ok := applyMsg.Command.(string); ok {
 				if command == raft.CommandInstallSnapshot {
 					DPrintf("KVServer %d stateMachine received InstallSnapshot %+v\n", kv.me, applyMsg)
-					kv.mu.Lock()
 					kv.init()
-					kv.mu.Unlock()
-					kv.rf.InstallSnapshotFinishedAndReplay()
+					kv.rf.Replay()
 				}
 			}
 		}
@@ -237,39 +247,48 @@ func StartKVServer(servers []*labrpc.ClientEnd, me int, persister *raft.Persiste
 	kv.applyCh = make(chan raft.ApplyMsg)
 	kv.persister = persister
 	kv.opResultNotifyChs = make(map[string]chan OpResult)
+	kv.init()
 	kv.rf = raft.Make(servers, me, persister, kv.applyCh)
 	// You may need initialization code here.
 	go kv.stateMachine()
-	kv.init()
-	kv.rf.Replay()
 	return kv
 }
 
 func (kv *KVServer) init() {
+	kv.mu.Lock()
+	defer kv.mu.Unlock()
 	data := kv.persister.ReadSnapshot()
 	if len(data) == 0 {
+		kv.lastApplied = 0
 		kv.database = make(map[string]string)
 		kv.lastOpResultStore = make(map[int64]OpResult)
 	} else {
 		r := bytes.NewBuffer(data)
 		d := labgob.NewDecoder(r)
+		kv.lastApplied = 0
+		kv.lastIncludedIndex = 0
 		kv.database = nil
 		kv.lastOpResultStore = nil
+		d.Decode(&kv.lastApplied)
+		d.Decode(&kv.lastIncludedIndex)
 		d.Decode(&kv.database)
 		d.Decode(&kv.lastOpResultStore)
-		//DPrintf("KVServer %d init database = %v globalsessions = %v\n", kv.me, kv.database, kv.globalsessions)
+		//DPrintf("KVServer %d install snapshot database = %v \n lastOpResultStore = %v\n", kv.me, kv.database, kv.lastOpResultStore)
+		//log.Printf("KVServer %d install snapshot database = %v \n lastOpResultStore = %v\n", kv.me, kv.database, kv.lastOpResultStore)
 	}
 }
 
-func (kv *KVServer) saveKVServerState(lastIncludedIndex int) {
-	if kv.maxraftstate == -1 || kv.persister.RaftStateSize() < kv.maxraftstate {
-		return
-	} else {
+func (kv *KVServer) saveKVServerState(force bool) {
+	shouldSave := kv.maxraftstate != -1 && (force || kv.persister.RaftStateSize() > kv.maxraftstate && kv.lastApplied-kv.lastIncludedIndex >= 30)
+	if shouldSave {
+		kv.lastIncludedIndex = kv.lastApplied
 		w := new(bytes.Buffer)
 		e := labgob.NewEncoder(w)
+		e.Encode(kv.lastApplied)
+		e.Encode(kv.lastIncludedIndex)
 		e.Encode(kv.database)
 		e.Encode(kv.lastOpResultStore)
 		snapshot := w.Bytes()
-		kv.rf.SaveSnapshot(lastIncludedIndex, snapshot)
+		kv.rf.SaveSnapshot(kv.lastApplied, snapshot)
 	}
 }
