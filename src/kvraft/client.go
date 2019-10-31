@@ -61,9 +61,7 @@ func (ck *Clerk) Get(key string) string {
 			DPrintf("client %d request leader %d Get failed key args = %+v reply = %+v\n", ck.clientId, ck.leaderId, args, reply)
 			ck.leaderId = (ck.leaderId + 1) % len(ck.servers)
 		}
-		if reply.Result != ErrWrongLeader {
-			time.Sleep(ClientOpWait)
-		}
+		time.Sleep(ClientOpWait)
 	}
 }
 
@@ -96,9 +94,7 @@ func (ck *Clerk) PutAppend(key string, value string, op string) {
 			DPrintf("client %d request leader %d %s failed args = %+v reply = %v\n", ck.clientId, ck.leaderId, args.Op, args, reply)
 			ck.leaderId = (ck.leaderId + 1) % len(ck.servers)
 		}
-		if reply.Result != ErrWrongLeader {
-			time.Sleep(ClientOpWait)
-		}
+		time.Sleep(ClientOpWait)
 	}
 }
 

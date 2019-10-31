@@ -12,23 +12,8 @@ import (
 	"time"
 )
 
-type OpArgs struct {
-	ClientId int64
-	OpId     int64
-	Key      string
-	Value    string
-	OpType   string // "Get", "Put" or "Append"
-}
-
-type OpResult struct {
-	ClientId int64
-	OpId     int64
-	Result   string
-	Value    string
-}
-
 type KVServer struct {
-	mu                sync.Mutex
+	mu                sync.RWMutex
 	me                int
 	rf                *raft.Raft
 	applyCh           chan raft.ApplyMsg
@@ -38,9 +23,9 @@ type KVServer struct {
 	maxraftstate      int // snapshot if log grows this big
 	lastApplied       int
 	lastIncludedIndex int
-	database          map[string]string        // store kv data
-	lastOpResultStore map[int64]OpResult       // store client last op result
-	opResultNotifyChs map[string]chan OpResult // for notify the op has finished
+	database          map[string]string  // store kv data
+	lastOpResultStore map[int64]OpResult // store client last op result
+	applyWait         *Wait
 	// Your definitions here.
 }
 
@@ -65,23 +50,19 @@ func (kv *KVServer) start(args interface{}) (result string, value string) {
 	} else {
 		return fmt.Sprintf("ErrArgsType:%+v", args), ""
 	}
-	kv.mu.Lock()
+	kv.mu.RLock()
 	if lastOpResult, ok := kv.lastOpResultStore[op.ClientId]; ok && lastOpResult.OpId == op.OpId {
 		DPrintf("KVServer %d return client %d by store result = %+v\n", kv.me, op.ClientId, lastOpResult)
-		kv.mu.Unlock()
+		kv.mu.RUnlock()
 		return lastOpResult.Result, lastOpResult.Value
 	} else if lastOpResult.OpId > op.OpId {
-		kv.mu.Unlock()
+		kv.mu.RUnlock()
 		return ErrOutdatedRequest, ""
 	}
-	resultCh := make(chan OpResult, 1)
-	kv.opResultNotifyChs[fmt.Sprintf(NotifyKeyFormat, op.ClientId, op.OpId)] = resultCh
-	kv.mu.Unlock()
-	defer func() {
-		kv.mu.Lock()
-		delete(kv.opResultNotifyChs, fmt.Sprintf(NotifyKeyFormat, op.ClientId, op.OpId))
-		kv.mu.Unlock()
-	}()
+	kv.mu.RUnlock()
+
+	resultCh := kv.applyWait.Register(op)
+	defer kv.applyWait.Unregister(op)
 	_, _, isLeader := kv.rf.Start(op)
 	if !isLeader {
 		return ErrWrongLeader, ""
@@ -96,12 +77,6 @@ func (kv *KVServer) start(args interface{}) (result string, value string) {
 	case opResult := <-resultCh:
 		DPrintf("KVServer %d return client %d by resultCh result = %+v\n", kv.me, op.ClientId, opResult)
 		return opResult.Result, opResult.Value
-		/*if opResult.ClientId != op.ClientId || opResult.OpId != op.OpId {
-			return ErrWrongLeader, ""
-		} else {
-
-
-		}*/
 	}
 }
 
@@ -162,9 +137,7 @@ func (kv *KVServer) stateMachine() {
 								kv.lastOpResultStore[op.ClientId] = result
 								//DPrintf("KVServer %d stateMachine execute command %+v result = %+v database= %v\n", kv.me, applyMsg, result, kv.database)
 								DPrintf("KVServer %d stateMachine execute command %+v result = %+v lastOpResultStore = %+v\n", kv.me, applyMsg, result, kv.lastOpResultStore[op.ClientId])
-								if resultCh, ok := kv.opResultNotifyChs[fmt.Sprintf(NotifyKeyFormat, op.ClientId, op.OpId)]; ok {
-									resultCh <- result
-								}
+								kv.applyWait.Trigger(result)
 								kv.saveKVServerState(false)
 							}
 						} else if op.OpType == "Put" {
@@ -177,9 +150,7 @@ func (kv *KVServer) stateMachine() {
 								kv.lastOpResultStore[op.ClientId] = result
 								//DPrintf("KVServer %d stateMachine execute command %+v result = %+v database= %v\n", kv.me, applyMsg, result, kv.database)
 								DPrintf("KVServer %d stateMachine execute command %+v result = %+v \n", kv.me, applyMsg, result)
-								if resultCh, ok := kv.opResultNotifyChs[fmt.Sprintf(NotifyKeyFormat, op.ClientId, op.OpId)]; ok {
-									resultCh <- result
-								}
+								kv.applyWait.Trigger(result)
 								kv.saveKVServerState(false)
 							}
 						} else if op.OpType == "Append" {
@@ -192,9 +163,7 @@ func (kv *KVServer) stateMachine() {
 								kv.database[op.Key] = oldValue + op.Value
 								kv.lastOpResultStore[op.ClientId] = result
 								//DPrintf("KVServer %d stateMachine execute command %+v result = %+v database= %v\n", kv.me, applyMsg, result, kv.database)
-								if resultCh, ok := kv.opResultNotifyChs[fmt.Sprintf(NotifyKeyFormat, op.ClientId, op.OpId)]; ok {
-									resultCh <- result
-								}
+								kv.applyWait.Trigger(result)
 								kv.saveKVServerState(false)
 							}
 						}
@@ -246,7 +215,7 @@ func StartKVServer(servers []*labrpc.ClientEnd, me int, persister *raft.Persiste
 	kv.close = cancel
 	kv.applyCh = make(chan raft.ApplyMsg)
 	kv.persister = persister
-	kv.opResultNotifyChs = make(map[string]chan OpResult)
+	kv.applyWait = NewWait()
 	kv.init()
 	kv.rf = raft.Make(servers, me, persister, kv.applyCh)
 	// You may need initialization code here.
@@ -279,7 +248,7 @@ func (kv *KVServer) init() {
 }
 
 func (kv *KVServer) saveKVServerState(force bool) {
-	shouldSave := kv.maxraftstate != -1 && (force || kv.persister.RaftStateSize() > kv.maxraftstate && kv.lastApplied-kv.lastIncludedIndex >= 30)
+	shouldSave := kv.maxraftstate != -1 && (force || kv.persister.RaftStateSize() > kv.maxraftstate)
 	if shouldSave {
 		kv.lastIncludedIndex = kv.lastApplied
 		w := new(bytes.Buffer)
