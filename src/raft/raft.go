@@ -380,7 +380,7 @@ func (rf *Raft) sendLog(server int) {
 func (rf *Raft) sendSnapshot(server int) {
 	rf.mu.RLock()
 	if rf.state != LEADER {
-		rf.mu.Unlock()
+		rf.mu.RUnlock()
 		return
 	}
 	args := RequestInstallSnapshotArgs{
