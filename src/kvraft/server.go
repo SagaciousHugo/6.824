@@ -137,7 +137,7 @@ func (kv *KVServer) stateMachine() {
 								kv.lastOpResultStore[op.ClientId] = result
 								//DPrintf("KVServer %d stateMachine execute command %+v result = %+v database= %v\n", kv.me, applyMsg, result, kv.database)
 								DPrintf("KVServer %d stateMachine execute command %+v result = %+v lastOpResultStore = %+v\n", kv.me, applyMsg, result, kv.lastOpResultStore[op.ClientId])
-								kv.applyWait.Trigger(result)
+								go kv.applyWait.Trigger(result)
 								kv.saveKVServerState(false)
 							}
 						} else if op.OpType == "Put" {
@@ -150,7 +150,7 @@ func (kv *KVServer) stateMachine() {
 								kv.lastOpResultStore[op.ClientId] = result
 								//DPrintf("KVServer %d stateMachine execute command %+v result = %+v database= %v\n", kv.me, applyMsg, result, kv.database)
 								DPrintf("KVServer %d stateMachine execute command %+v result = %+v \n", kv.me, applyMsg, result)
-								kv.applyWait.Trigger(result)
+								go kv.applyWait.Trigger(result)
 								kv.saveKVServerState(false)
 							}
 						} else if op.OpType == "Append" {
@@ -163,17 +163,18 @@ func (kv *KVServer) stateMachine() {
 								kv.database[op.Key] = oldValue + op.Value
 								kv.lastOpResultStore[op.ClientId] = result
 								//DPrintf("KVServer %d stateMachine execute command %+v result = %+v database= %v\n", kv.me, applyMsg, result, kv.database)
-								kv.applyWait.Trigger(result)
+								go kv.applyWait.Trigger(result)
 								kv.saveKVServerState(false)
 							}
 						}
-					} else {
-						DPrintf("KVServer %d expect commandIndex= %d real = %+v\n", kv.me, kv.lastApplied+1, applyMsg)
-						if kv.lastApplied+1 < applyMsg.CommandIndex {
-							kv.rf.Replay()
-						}
 					}
-					kv.mu.Unlock()
+					if kv.lastApplied+1 < applyMsg.CommandIndex {
+						DPrintf("KVServer %d expect commandIndex= %d real = %+v\n", kv.me, kv.lastApplied+1, applyMsg)
+						kv.mu.Unlock()
+						kv.rf.Replay()
+					} else {
+						kv.mu.Unlock()
+					}
 				}
 			} else if command, ok := applyMsg.Command.(string); ok {
 				if command == raft.CommandInstallSnapshot {

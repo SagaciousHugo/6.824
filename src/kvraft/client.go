@@ -11,7 +11,6 @@ type Clerk struct {
 	servers  []*labrpc.ClientEnd
 	clientId int64
 	lastOpId int64
-	leaderId int
 	// You will have to modify this struct.
 }
 
@@ -25,7 +24,6 @@ func nrand() int64 {
 func MakeClerk(servers []*labrpc.ClientEnd) *Clerk {
 	ck := new(Clerk)
 	ck.servers = servers
-	ck.leaderId = 0
 	ck.clientId = nrand()
 	ck.lastOpId = 0
 	// You'll have to add code here.
@@ -53,15 +51,15 @@ func (ck *Clerk) Get(key string) string {
 		OpId:     ck.lastOpId,
 	}
 	for {
-		reply := GetReply{}
-		if ck.servers[ck.leaderId].Call("KVServer.Get", &args, &reply); reply.Result == OK || reply.Result == ErrNoKey {
-			DPrintf("client %d request leader %d Get success args = %+v \n", ck.clientId, ck.leaderId, args)
-			return reply.Value
-		} else {
-			DPrintf("client %d request leader %d Get failed key args = %+v reply = %+v\n", ck.clientId, ck.leaderId, args, reply)
-			ck.leaderId = (ck.leaderId + 1) % len(ck.servers)
+		// try each known server.
+		for _, srv := range ck.servers {
+			var reply GetReply
+			ok := srv.Call("KVServer.Get", &args, &reply)
+			if ok && (reply.Result == OK || reply.Result == ErrNoKey) {
+				return reply.Value
+			}
 		}
-		time.Sleep(ClientOpWait)
+		time.Sleep(100 * time.Millisecond)
 	}
 }
 
@@ -86,15 +84,15 @@ func (ck *Clerk) PutAppend(key string, value string, op string) {
 		ClientId: ck.clientId,
 	}
 	for {
-		reply := PutAppendReply{}
-		if ck.servers[ck.leaderId].Call("KVServer.PutAppend", &args, &reply); reply.Result == OK {
-			DPrintf("client %d request leader %d %s success args = %+v reply = %+v\n", ck.clientId, ck.leaderId, args.Op, args, reply)
-			return
-		} else {
-			DPrintf("client %d request leader %d %s failed args = %+v reply = %v\n", ck.clientId, ck.leaderId, args.Op, args, reply)
-			ck.leaderId = (ck.leaderId + 1) % len(ck.servers)
+		// try each known server.
+		for _, srv := range ck.servers {
+			var reply PutAppendReply
+			ok := srv.Call("KVServer.PutAppend", &args, &reply)
+			if ok && reply.Result == OK {
+				return
+			}
 		}
-		time.Sleep(ClientOpWait)
+		time.Sleep(100 * time.Millisecond)
 	}
 }
 
