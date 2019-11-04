@@ -1,5 +1,11 @@
 package shardmaster
 
+import (
+	"fmt"
+	"raft"
+	"sync"
+)
+
 //
 // Master shard server: assigns shards to replication groups.
 //
@@ -29,45 +35,122 @@ type Config struct {
 }
 
 const (
-	OK = "OK"
+	OK                 = "OK"
+	ErrConfigNum       = "ErrConfigNum"
+	ErrWrongLeader     = "ErrWrongLeader"
+	ErrOpTimeout       = "ErrOpTimeout"
+	ErrKVServerClosed  = "ErrKVServerClosed"
+	ErrOutdatedRequest = "ErrOutdatedRequest"
+	OpTimeout          = raft.ELECTIONTIMEOUT
+	ClientOpWait       = raft.HEARTBEAT
+	NotifyKeyFormat    = "%d_%d"
 )
 
 type Err string
 
+type OpInfo interface {
+	getClientId() int64
+	getOpId() int64
+}
+
+type BaseArgs struct {
+	ClientId int64
+	OpId     int64
+}
+
+func (b BaseArgs) getClientId() int64 {
+	return b.ClientId
+}
+
+func (b BaseArgs) getOpId() int64 {
+	return b.OpId
+}
+
 type JoinArgs struct {
+	BaseArgs
 	Servers map[int][]string // new GID -> servers mappings
 }
 
 type JoinReply struct {
-	WrongLeader bool
-	Err         Err
+	Result string
 }
 
 type LeaveArgs struct {
+	BaseArgs
 	GIDs []int
 }
 
 type LeaveReply struct {
-	WrongLeader bool
-	Err         Err
+	Result string
 }
 
 type MoveArgs struct {
+	BaseArgs
 	Shard int
 	GID   int
 }
 
 type MoveReply struct {
-	WrongLeader bool
-	Err         Err
+	Result string
 }
 
 type QueryArgs struct {
+	BaseArgs
 	Num int // desired config number
 }
 
 type QueryReply struct {
-	WrongLeader bool
-	Err         Err
-	Config      Config
+	Result string
+	Config Config
+}
+
+type OpResult struct {
+	ClientId int64
+	OpId     int64
+	Result   string
+	Config   Config
+}
+
+type Wait struct {
+	l sync.RWMutex
+	m map[string]chan OpResult
+}
+
+// New creates a Wait.
+func NewWait() *Wait {
+	return &Wait{m: make(map[string]chan OpResult)}
+}
+
+func (w *Wait) Register(info OpInfo) <-chan OpResult {
+	w.l.Lock()
+	defer w.l.Unlock()
+	key := fmt.Sprintf("%d_%d", info.getClientId(), info.getOpId())
+	ch := w.m[key]
+	if ch != nil {
+		close(ch)
+	}
+	ch = make(chan OpResult, 1)
+	w.m[key] = ch
+	return ch
+}
+
+func (w *Wait) Unregister(info OpInfo) {
+	w.l.Lock()
+	defer w.l.Unlock()
+	key := fmt.Sprintf("%d_%d", info.getClientId(), info.getOpId())
+	ch := w.m[key]
+	delete(w.m, key)
+	if ch != nil {
+		close(ch)
+	}
+}
+
+func (w *Wait) Trigger(result OpResult) {
+	w.l.RLock()
+	defer w.l.RUnlock()
+	key := fmt.Sprintf("%d_%d", result.ClientId, result.OpId)
+	ch := w.m[key]
+	if ch != nil {
+		ch <- result
+	}
 }
