@@ -54,7 +54,7 @@ type config struct {
 	mu    sync.Mutex
 	t     *testing.T
 	net   *labrpc.Network
-	start time.Time // time at which make_config() was called
+	start time.Time // Time at which make_config() was called
 
 	nmasters      int
 	masterservers []*shardmaster.ShardMaster
@@ -70,7 +70,7 @@ type config struct {
 }
 
 func (cfg *config) checkTimeout() {
-	// enforce a two minute real-time limit on each test
+	// enforce a two minute real-Time limit on each test
 	if !cfg.t.Failed() && time.Since(cfg.start) > 120*time.Second {
 		cfg.t.Fatal("test took longer than 120 seconds")
 	}

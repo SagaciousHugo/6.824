@@ -1,9 +1,7 @@
 package shardmaster
 
 import (
-	"fmt"
 	"raft"
-	"sync"
 )
 
 //
@@ -109,48 +107,4 @@ type OpResult struct {
 	OpId     int64
 	Result   string
 	Config   Config
-}
-
-type Wait struct {
-	l sync.RWMutex
-	m map[string]chan OpResult
-}
-
-// New creates a Wait.
-func NewWait() *Wait {
-	return &Wait{m: make(map[string]chan OpResult)}
-}
-
-func (w *Wait) Register(info OpInfo) <-chan OpResult {
-	w.l.Lock()
-	defer w.l.Unlock()
-	key := fmt.Sprintf("%d_%d", info.getClientId(), info.getOpId())
-	ch := w.m[key]
-	if ch != nil {
-		close(ch)
-	}
-	ch = make(chan OpResult, 1)
-	w.m[key] = ch
-	return ch
-}
-
-func (w *Wait) Unregister(info OpInfo) {
-	w.l.Lock()
-	defer w.l.Unlock()
-	key := fmt.Sprintf("%d_%d", info.getClientId(), info.getOpId())
-	ch := w.m[key]
-	delete(w.m, key)
-	if ch != nil {
-		close(ch)
-	}
-}
-
-func (w *Wait) Trigger(result OpResult) {
-	w.l.RLock()
-	defer w.l.RUnlock()
-	key := fmt.Sprintf("%d_%d", result.ClientId, result.OpId)
-	ch := w.m[key]
-	if ch != nil {
-		ch <- result
-	}
 }

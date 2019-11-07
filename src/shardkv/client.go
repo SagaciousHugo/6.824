@@ -38,6 +38,8 @@ func nrand() int64 {
 type Clerk struct {
 	sm       *shardmaster.Clerk
 	config   shardmaster.Config
+	clientId int64
+	lastOpId int64
 	make_end func(string) *labrpc.ClientEnd
 	// You will have to modify this struct.
 }
@@ -55,6 +57,7 @@ func MakeClerk(masters []*labrpc.ClientEnd, make_end func(string) *labrpc.Client
 	ck := new(Clerk)
 	ck.sm = shardmaster.MakeClerk(masters)
 	ck.make_end = make_end
+	ck.clientId = nrand()
 	// You'll have to add code here.
 	return ck
 }
@@ -68,8 +71,10 @@ func MakeClerk(masters []*labrpc.ClientEnd, make_end func(string) *labrpc.Client
 func (ck *Clerk) Get(key string) string {
 	args := GetArgs{}
 	args.Key = key
-
+	args.ClientId = ck.clientId
+	args.OpId = ck.generateOpId()
 	for {
+		args.ConfigNum = ck.config.Num
 		shard := key2shard(key)
 		gid := ck.config.Shards[shard]
 		if servers, ok := ck.config.Groups[gid]; ok {
@@ -78,10 +83,13 @@ func (ck *Clerk) Get(key string) string {
 				srv := ck.make_end(servers[si])
 				var reply GetReply
 				ok := srv.Call("ShardKV.Get", &args, &reply)
-				if ok && reply.WrongLeader == false && (reply.Err == OK || reply.Err == ErrNoKey) {
+				if ok {
+					DPrintf("ShardKV.Get request server = %s shardNum= %d args = %+v reply = %+v\n", servers[si], shard, args, reply)
+				}
+				if ok && (reply.Result == OK || reply.Result == ErrNoKey) {
 					return reply.Value
 				}
-				if ok && (reply.Err == ErrWrongGroup) {
+				if ok && (reply.Result == ErrWrongGroup) {
 					break
 				}
 			}
@@ -103,8 +111,10 @@ func (ck *Clerk) PutAppend(key string, value string, op string) {
 	args.Key = key
 	args.Value = value
 	args.Op = op
-
+	args.ClientId = ck.clientId
+	args.OpId = ck.generateOpId()
 	for {
+		args.ConfigNum = ck.config.Num
 		shard := key2shard(key)
 		gid := ck.config.Shards[shard]
 		if servers, ok := ck.config.Groups[gid]; ok {
@@ -112,10 +122,13 @@ func (ck *Clerk) PutAppend(key string, value string, op string) {
 				srv := ck.make_end(servers[si])
 				var reply PutAppendReply
 				ok := srv.Call("ShardKV.PutAppend", &args, &reply)
-				if ok && reply.WrongLeader == false && reply.Err == OK {
+				if ok {
+					DPrintf("ShardKV.PutAppend request server = %s shardNum= %d args = %+v reply = %+v\n", servers[si], shard, args, reply)
+				}
+				if ok && reply.Result == OK {
 					return
 				}
-				if ok && reply.Err == ErrWrongGroup {
+				if ok && reply.Result == ErrWrongGroup {
 					break
 				}
 			}
@@ -131,4 +144,9 @@ func (ck *Clerk) Put(key string, value string) {
 }
 func (ck *Clerk) Append(key string, value string) {
 	ck.PutAppend(key, value, "Append")
+}
+
+func (ck *Clerk) generateOpId() int64 {
+	ck.lastOpId++
+	return ck.lastOpId
 }

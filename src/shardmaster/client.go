@@ -4,7 +4,9 @@ package shardmaster
 // Shardmaster clerk.
 //
 
-import "labrpc"
+import (
+	"labrpc"
+)
 import "time"
 import "crypto/rand"
 import "math/big"
@@ -13,7 +15,6 @@ type Clerk struct {
 	servers  []*labrpc.ClientEnd
 	clientId int64
 	lastOpId int64
-	leaderId int
 	// Your data here.
 }
 

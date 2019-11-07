@@ -2,7 +2,9 @@ package shardmaster
 
 import (
 	"container/heap"
+	"fmt"
 	"log"
+	"sync"
 )
 
 const Debug = 0
@@ -14,19 +16,65 @@ func DPrintf(format string, a ...interface{}) (n int, err error) {
 	return
 }
 
+type Wait struct {
+	l sync.RWMutex
+	m map[string]chan OpResult
+}
+
+// New creates a Wait.
+func NewWait() *Wait {
+	return &Wait{m: make(map[string]chan OpResult)}
+}
+
+func (w *Wait) Register(info OpInfo) <-chan OpResult {
+	w.l.Lock()
+	defer w.l.Unlock()
+	key := fmt.Sprintf("%d_%d", info.getClientId(), info.getOpId())
+	ch := w.m[key]
+	if ch != nil {
+		close(ch)
+	}
+	ch = make(chan OpResult, 1)
+	w.m[key] = ch
+	return ch
+}
+
+func (w *Wait) Unregister(info OpInfo) {
+	w.l.Lock()
+	defer w.l.Unlock()
+	key := fmt.Sprintf("%d_%d", info.getClientId(), info.getOpId())
+	ch := w.m[key]
+	delete(w.m, key)
+	if ch != nil {
+		close(ch)
+	}
+}
+
+func (w *Wait) Trigger(result OpResult) {
+	w.l.RLock()
+	defer w.l.RUnlock()
+	key := fmt.Sprintf("%d_%d", result.ClientId, result.OpId)
+	ch := w.m[key]
+	if ch != nil {
+		ch <- result
+	}
+}
+
 /* average divide shards for groups (result from high to low )
 shardNum fixed to 10
-groupNum shardResult
-1 [10]
-2 [5 5]
-3 [4 3 3]
-4 [3 3 2 2]
-5 [2 2 2 2 2]
-6 [2 2 2 2 1 1]
-7 [2 2 2 1 1 1 1]
-8 [2 2 1 1 1 1 1 1]
-9 [2 1 1 1 1 1 1 1 1]
-10 [1 1 1 1 1 1 1 1 1 1]
+groupNum shardResult:
+1 	[10]
+2 	[5 5]
+3 	[4 3 3]
+4 	[3 3 2 2]
+5 	[2 2 2 2 2]
+6 	[2 2 2 2 1 1]
+7 	[2 2 2 1 1 1 1]
+8 	[2 2 1 1 1 1 1 1]
+9 	[2 1 1 1 1 1 1 1 1]
+10 	[1 1 1 1 1 1 1 1 1 1]
+11  [1 1 1 1 1 1 1 1 1 1 0]
+12  [1 1 1 1 1 1 1 1 1 1 0 0]
 */
 func shardDivide(shardNum, groupNum int) []int {
 	if groupNum == 0 {

@@ -56,24 +56,24 @@ func (sm *ShardMaster) Move(args *MoveArgs, reply *MoveReply) {
 
 func (sm *ShardMaster) Query(args *QueryArgs, reply *QueryReply) {
 	// Your code here.
-	sm.mu.RLock()
+	sm.mu.Lock()
 	if lastOpResult, ok := sm.lastOpResultStore[args.getClientId()]; ok && lastOpResult.OpId == args.getOpId() {
 		reply.Result = lastOpResult.Result
 		reply.Config = lastOpResult.Config
-		sm.mu.RUnlock()
+		sm.mu.Unlock()
 		return
 	} else if lastOpResult.OpId > args.getOpId() {
 		reply.Result = ErrOutdatedRequest
-		sm.mu.RUnlock()
+		sm.mu.Unlock()
 		return
 	} else if args.Num >= 0 && args.Num < len(sm.configs) {
 		reply.Result = OK
 		reply.Config = sm.configs[args.Num]
 		sm.lastOpResultStore[args.ClientId] = OpResult{args.ClientId, args.OpId, OK, reply.Config}
-		sm.mu.RUnlock()
+		sm.mu.Unlock()
 		return
 	}
-	sm.mu.RUnlock()
+	sm.mu.Unlock()
 
 	resultCh := sm.applyWait.Register(args)
 	defer sm.applyWait.Unregister(args)
@@ -213,65 +213,66 @@ func (sm *ShardMaster) stateMachine() {
 			return
 		case applyMsg := <-sm.applyCh:
 			if applyMsg.CommandValid {
-				result := OpResult{}
 				sm.mu.Lock()
 				if sm.lastApplied+1 < applyMsg.CommandIndex {
-					go sm.rf.Replay()
-				} else if applyMsg.CommandIndex == sm.lastApplied+1 {
-					sm.lastApplied++
-					switch op := applyMsg.Command.(type) {
-					case JoinArgs:
-						if lastOpResult, ok := sm.lastOpResultStore[op.ClientId]; !ok || op.OpId > lastOpResult.OpId {
-							sm.joinGroups(op)
-							result.ClientId = op.ClientId
-							result.OpId = op.OpId
-							result.Result = OK
-							sm.lastOpResultStore[op.ClientId] = result
-							sm.saveShardMasterState()
-							go sm.applyWait.Trigger(result)
-						}
-					case MoveArgs:
-						if lastOpResult, ok := sm.lastOpResultStore[op.ClientId]; !ok || op.OpId > lastOpResult.OpId {
-							sm.moveShardGroup(op)
-							result.ClientId = op.ClientId
-							result.OpId = op.OpId
-							result.Result = OK
-							sm.lastOpResultStore[op.ClientId] = result
-							sm.saveShardMasterState()
-							go sm.applyWait.Trigger(result)
-						}
-					case LeaveArgs:
-						if lastOpResult, ok := sm.lastOpResultStore[op.ClientId]; !ok || op.OpId > lastOpResult.OpId {
-							sm.leaveGroups(op)
-							result.ClientId = op.ClientId
-							result.OpId = op.OpId
-							result.Result = OK
-							sm.lastOpResultStore[op.ClientId] = result
-							sm.saveShardMasterState()
-							go sm.applyWait.Trigger(result)
-						}
-					case QueryArgs:
-						if lastOpResult, ok := sm.lastOpResultStore[op.ClientId]; !ok || op.OpId > lastOpResult.OpId {
-							result.ClientId = op.ClientId
-							result.OpId = op.OpId
-							if op.Num >= 0 && op.Num < len(sm.configs) {
+					sm.mu.Unlock()
+					sm.rf.Replay()
+				} else {
+					if applyMsg.CommandIndex == sm.lastApplied+1 {
+						sm.lastApplied++
+						result := OpResult{}
+						switch op := applyMsg.Command.(type) {
+						case JoinArgs:
+							if lastOpResult, ok := sm.lastOpResultStore[op.ClientId]; !ok || op.OpId > lastOpResult.OpId {
+								sm.joinGroups(op)
+								result.ClientId = op.ClientId
+								result.OpId = op.OpId
 								result.Result = OK
-								result.Config = sm.configs[op.Num]
-							} else if op.Num < 0 {
-								result.Result = OK
-								result.Config = sm.configs[len(sm.configs)-1]
-							} else {
-								result.Result = ErrConfigNum
+								sm.lastOpResultStore[op.ClientId] = result
+								sm.saveShardMasterState()
+								go sm.applyWait.Trigger(result)
 							}
-							sm.lastOpResultStore[op.ClientId] = result
-							sm.saveShardMasterState()
-							go sm.applyWait.Trigger(result)
+						case MoveArgs:
+							if lastOpResult, ok := sm.lastOpResultStore[op.ClientId]; !ok || op.OpId > lastOpResult.OpId {
+								sm.moveShardGroup(op)
+								result.ClientId = op.ClientId
+								result.OpId = op.OpId
+								result.Result = OK
+								sm.lastOpResultStore[op.ClientId] = result
+								sm.saveShardMasterState()
+								go sm.applyWait.Trigger(result)
+							}
+						case LeaveArgs:
+							if lastOpResult, ok := sm.lastOpResultStore[op.ClientId]; !ok || op.OpId > lastOpResult.OpId {
+								sm.leaveGroups(op)
+								result.ClientId = op.ClientId
+								result.OpId = op.OpId
+								result.Result = OK
+								sm.lastOpResultStore[op.ClientId] = result
+								sm.saveShardMasterState()
+								go sm.applyWait.Trigger(result)
+							}
+						case QueryArgs:
+							if lastOpResult, ok := sm.lastOpResultStore[op.ClientId]; !ok || op.OpId > lastOpResult.OpId {
+								result.ClientId = op.ClientId
+								result.OpId = op.OpId
+								if op.Num >= 0 && op.Num < len(sm.configs) {
+									result.Result = OK
+									result.Config = sm.configs[op.Num]
+								} else {
+									result.Result = OK
+									result.Config = sm.configs[len(sm.configs)-1]
+								}
+								sm.lastOpResultStore[op.ClientId] = result
+								sm.saveShardMasterState()
+								go sm.applyWait.Trigger(result)
+							}
+						default:
+							DPrintf("ShardMaster %d stateMachine received wrong type command %+v %v\n", sm.me, applyMsg, reflect.TypeOf(applyMsg.Command))
 						}
-					default:
-						DPrintf("ShardMaster %d stateMachine received wrong type command %+v %v\n", sm.me, applyMsg, reflect.TypeOf(applyMsg.Command))
 					}
+					sm.mu.Unlock()
 				}
-				sm.mu.Unlock()
 
 			} else if command, ok := applyMsg.Command.(string); ok {
 				if command == raft.CommandInstallSnapshot {
