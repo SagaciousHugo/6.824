@@ -33,7 +33,6 @@ type ShardMaster struct {
 	// Your data here.
 	persister         *raft.Persister
 	lastApplied       int
-	currentConfig     Config
 	lastOpResultStore map[int64]OpResult // store client last op result
 	applyWait         *Wait
 	configs           []Config // indexed by config num
@@ -331,7 +330,7 @@ func (sm *ShardMaster) reBalance(conf *Config) {
 		}
 	}
 	for h.Len() > 0 {
-		gs := heap.Pop(h).(*groupShard)
+		gs := heap.Pop(h).(*GroupShard)
 		if len(gs.Shards) > divide[0] {
 			index := divide[0]
 			reallocateShards = append(reallocateShards, gs.Shards[index:]...)

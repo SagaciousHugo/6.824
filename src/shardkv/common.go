@@ -28,7 +28,7 @@ const (
 	ErrWaitMigrationTimeOut = "ErrWaitMigrationTimeOut"
 	ErrWaitCleanTimeOut     = "ErrWaitCleanTimeOut"
 	OpTimeout               = raft.ELECTIONTIMEOUT
-	WaitMigrationTimeOut    = 2 * time.Second
+	WaitMigrationTimeOut    = 3 * time.Second
 	WaitCleanTimeOut        = 3 * time.Second
 )
 

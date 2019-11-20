@@ -87,14 +87,14 @@ func shardDivide(shardNum, groupNum int) []int {
 	return res
 }
 
-type groupShard struct {
+type GroupShard struct {
 	Index  int
 	Gid    int
 	Shards []int
 }
 
 func NewHeapGroupShard(groups map[int][]string) *heapGroupShard {
-	h := &heapGroupShard{m: make(map[int]*groupShard)}
+	h := &heapGroupShard{m: make(map[int]*GroupShard)}
 	for gid := range groups {
 		h.addGs(gid, -1)
 	}
@@ -102,12 +102,18 @@ func NewHeapGroupShard(groups map[int][]string) *heapGroupShard {
 }
 
 type heapGroupShard struct {
-	data []*groupShard
-	m    map[int]*groupShard
+	data []*GroupShard
+	m    map[int]*GroupShard
 }
 
-func (h heapGroupShard) Len() int           { return len(h.data) }
-func (h heapGroupShard) Less(i, j int) bool { return len(h.data[i].Shards) > len(h.data[j].Shards) }
+func (h heapGroupShard) Len() int { return len(h.data) }
+func (h heapGroupShard) Less(i, j int) bool {
+	if len(h.data[i].Shards) != len(h.data[j].Shards) {
+		return len(h.data[i].Shards) > len(h.data[j].Shards)
+	} else {
+		return h.data[i].Gid > h.data[j].Gid
+	}
+}
 func (h heapGroupShard) Swap(i, j int) {
 	h.data[i], h.data[j] = h.data[j], h.data[i]
 	h.data[i].Index = i
@@ -115,7 +121,7 @@ func (h heapGroupShard) Swap(i, j int) {
 }
 
 func (h *heapGroupShard) Push(x interface{}) {
-	gs := x.(*groupShard)
+	gs := x.(*GroupShard)
 	gs.Index = len(h.data)
 	h.data = append(h.data, gs)
 }
@@ -137,9 +143,9 @@ func (h *heapGroupShard) addGs(gid, shard int) {
 		heap.Fix(h, gs.Index)
 	} else {
 		if shard == -1 {
-			gs = &groupShard{-1, gid, []int{}}
+			gs = &GroupShard{-1, gid, []int{}}
 		} else {
-			gs = &groupShard{-1, gid, []int{shard}}
+			gs = &GroupShard{-1, gid, []int{shard}}
 		}
 		h.m[gid] = gs
 		heap.Push(h, gs)
