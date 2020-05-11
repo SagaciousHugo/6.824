@@ -28,8 +28,8 @@ const (
 	ErrWaitMigrationTimeOut = "ErrWaitMigrationTimeOut"
 	ErrWaitCleanTimeOut     = "ErrWaitCleanTimeOut"
 	OpTimeout               = raft.ELECTIONTIMEOUT
-	WaitMigrationTimeOut    = 3 * time.Second
-	WaitCleanTimeOut        = 3 * time.Second
+	WaitMigrationTimeOut    = 5 * time.Second
+	WaitCleanTimeOut        = 5 * time.Second
 )
 
 var Exists = struct{}{}
